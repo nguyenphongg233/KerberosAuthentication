@@ -1,136 +1,234 @@
-# Kerberos Protocol Demo in C++ (for Intro Information Security)
+# Kerberos Authentication Protocol - Python Simulation
 
-Du an nay mo phong luong xac thuc Kerberos theo cach don gian, phu hop de lam bai tap lon hoc phan nhap mon an toan thong tin.
+Đây là một mô phỏng lại giao thức xác thực Kerberos bằng Python, sử dụng kiến trúc OOP để minh họa cách các thực thể (Client, AS, TGS, Service Server, Database) tương tác với nhau.
 
-## Muc tieu hoc tap
+## Cấu trúc Project
 
-- Hieu ro 3 buoc chinh cua Kerberos:
-  - AS Exchange (AS-REQ/AS-REP)
-  - TGS Exchange (TGS-REQ/TGS-REP)
-  - Application Exchange (AP-REQ/AP-REP)
-- Hieu vai tro cua TGT, Service Ticket, session key va authenticator.
-- Biet cach trinh bay mot he thong xac thuc tap trung KDC trong bao cao do an.
-
-## Canh bao hoc thuat
-
-Day la mo phong phuc vu hoc tap. Ma hoa su dung XOR va hash don gian de de theo doi logic, KHONG duoc dung cho he thong thuc te.
-
-## Cac doan mo phong phu hop khuon kho mon hoc
-
-Muc nay giup phan biet ro giua "logic Kerberos can hoc" va "chi tiet ky thuat da don gian hoa de minh hoa".
-
-- Mo phong ma hoa va ham bam don gian (phuc vu de theo doi luong ban tin):
-  - src/crypto_utils.cpp
-  - Giai thich: su dung XOR stream va std::hash, KHONG phai ma hoa Kerberos thuc te.
-
-- Mo phong co so du lieu KDC toi gian:
-  - include/kdc_database.h
-  - src/kdc_database.cpp
-  - Giai thich: luu tru principal va khoa theo cach rut gon cho bai tap lon.
-
-- Mo phong AS Exchange (AS-REQ/AS-REP):
-  - include/as_server.h
-  - src/as_server.cpp
-  - Giai thich: van giu y nghia cap K_C-TGS va TGT, nhung trien khai toi gian de de hoc.
-
-- Mo phong TGS Exchange (TGS-REQ/TGS-REP):
-  - include/tgs_server.h
-  - src/tgs_server.cpp
-  - Giai thich: giu dung y tuong dung TGT + Authenticator de xin Service Ticket.
-
-- Mo phong Client/Server Exchange (AP-REQ/AP-REP):
-  - include/service_server.h
-  - src/service_server.cpp
-  - Giai thich: co kiem tra timestamp, replay co ban, va AP-REP cho mutual auth.
-
-- Mo phong luong tu phia client:
-  - include/kerberos_client.h
-  - src/kerberos_client.cpp
-  - Giai thich: dong vai tro script hoa toan bo 3 pha de demo tren console.
-
-- Chuong trinh demo kich ban hoc tap:
-  - src/main.cpp
-  - Giai thich: co 2 scenario mac dinh (dung mat khau, sai mat khau) de trinh bay ket qua.
-
-### Pham vi "dung ly thuyet" va "mo phong"
-
-- Dung ly thuyet Kerberos:
-  - Co KDC tach logic AS/TGS.
-  - Co TGT, Service Ticket, session key K_C-TGS va K_C-V.
-  - Co Authenticator + timestamp + mutual authentication.
-
-- Mo phong de phu hop mon hoc:
-  - Ma hoa/Xac thuc thong diep duoc don gian hoa.
-  - Khong tich hop MIT Kerberos, AD, JAAS/GSS-API.
-  - Khong mo phong day du realm, keytab, ticket cache, PAC, chinh sach domain.
-
-## Cau truc project
-
-- include/: Header files
-- src/: Source files
-- docs/: Tai lieu goi y viet bao cao
-- CMakeLists.txt: Cau hinh build CMake
-
-## Yeu cau moi truong
-
-- CMake >= 3.16
-- Trinh bien dich ho tro C++17 (MSVC, GCC, Clang)
-
-## Build va chay (PowerShell)
-
-```powershell
-cd d:\OneDrive-ntdxl\prj\kerberos
-cmake -S . -B build
-cmake --build build --config Release
-.\build\Release\kerberos_demo.exe
+```
+python_kerberos_v2/
+├── database/                    # Thực thể: KDC Database
+│   ├── database_entity.py       # Entity: Lớp biểu diễn Database
+│   ├── database_engine.py       # Engine: Logic xử lý dữ liệu
+│   └── database_crypto.py       # Crypto: Mã hóa/Giải mã của Database
+│
+├── as_server/                   # Thực thể: Authentication Server (AS)
+│   ├── as_entity.py             # Entity: Lớp biểu diễn AS
+│   ├── as_engine.py             # Engine: Xử lý AS-REQ, cấp TGT
+│   └── as_crypto.py             # Crypto: Mã hóa/Giải mã của AS
+│
+├── tgs_server/                  # Thực thể: Ticket Granting Server (TGS)
+│   ├── tgs_entity.py            # Entity: Lớp biểu diễn TGS
+│   ├── tgs_engine.py            # Engine: Xử lý TGS-REQ, cấp Service Ticket
+│   └── tgs_crypto.py            # Crypto: Mã hóa/Giải mã của TGS
+│
+├── client/                      # Thực thể: Client (Alice)
+│   ├── client_entity.py         # Entity: Lớp biểu diễn Client
+│   ├── client_engine.py         # Engine: Xử lý 3 pha giao tiếp
+│   └── client_crypto.py         # Crypto: Mã hóa/Giải mã của Client
+│
+├── service_server/              # Thực thể: Service Server
+│   ├── service_entity.py        # Entity: Lớp biểu diễn Service Server
+│   ├── service_engine.py        # Engine: Xác thực Client, phát hành AP-REP
+│   └── service_crypto.py        # Crypto: Mã hóa/Giải mã của Service Server
+│
+├── models.py                    # Các mô hình dữ liệu chung (Ticket, Authenticator, Messages)
+├── main.py                      # Điểm vào chương trình - Mô phỏng quá trình truyền dữ liệu
+└── README.md                    # Tài liệu này
 ```
 
-Neu dung MinGW hoac Ninja, file thuc thi co the nam o:
+## Kiến trúc Kerberos
 
-```powershell
-.\build\kerberos_demo.exe
+```
+┌──────────────┐
+│   Client     │ (Máy khách - Alice)
+│   (Alice)    │
+└──────────────┘
+       │
+       │ 1. AS-REQ: Xin TGT
+       ├──────────────────────────────────────────┐
+       │                                          │
+       │                                   ┌──────▼──────────────────┐
+       │                                   │   KDC (Trung tâm KDC)  │
+       │                                   │  ┌────────────────────┐ │
+       │                                   │  │ Authentication     │ │
+       │                                   │  │ Server (AS)        │ │
+       │                                   │  │                    │ │
+       │                                   │  └────────────────────┘ │
+       │   2. AS-REP: TGT + K_c,tgs        │  ┌────────────────────┐ │
+       │◄──────────────────────────────────┼──┤ Ticket Granting    │ │
+       │                                   │  │ Server (TGS)       │ │
+       │                                   │  │                    │ │
+       │                                   │  └────────────────────┘ │
+       │                                   │  ┌────────────────────┐ │
+       │                                   │  │ KDC Database       │ │
+       │                                   │  │ (Lưu Master Keys)  │ │
+       │                                   │  │                    │ │
+       │                                   │  └────────────────────┘ │
+       │                                   └────────────────────────┘
+       │
+       │ 3. TGS-REQ: TGT + Authenticator
+       ├──────────────────────────────────────────┐
+       │                                          │
+       │   4. TGS-REP: Service Ticket + K_c,s    │
+       │◄──────────────────────────────────────────┤
+       │
+       │ 5. AP-REQ: Service Ticket + Authenticator
+       │                              ┌──────────────────────────┐
+       │─────────────────────────────►│  Service Server          │
+       │                              │  (MailService)           │
+       │                              └──────────────────────────┘
+       │   6. AP-REP: Mutual Auth (TS + 1)
+       │◄─────────────────────────────
+
 ```
 
-## Cac kich ban co san
+## Các thành phần
 
-- Scenario 1: Dang nhap dung mat khau -> xac thuc thanh cong.
-- Scenario 2: Sai mat khau -> bi tu choi tai AS.
+### 1. **Database (KDC Database)**
+- Lưu trữ thông tin của tất cả Principal (User, TGS, Service)
+- Lưu trữ Master Key của mỗi Principal
+- Cung cấp API để truy vấn thông tin
 
-## Tuy chinh kich ban khi chay
+**Entity**: `database_entity.py` - Lớp `KDCDatabase`
+**Engine**: `database_engine.py` - Logic lưu trữ và truy vấn
+**Crypto**: `database_crypto.py` - Mã hóa/Giải mã dữ liệu
 
-Ban co the chay theo tung kich ban de demo ro rang hon:
+### 2. **Authentication Server (AS)**
+- Xác thực người dùng dựa trên mật khẩu
+- Cấp phát Ticket Granting Ticket (TGT)
+- Xử lý bản tin AS-REQ, trả về AS-REP
 
-```powershell
-.\build\kerberos_demo.exe --scenario success
-.\build\kerberos_demo.exe --scenario wrong-password
-.\build\kerberos_demo.exe --scenario unknown-service
-.\build\kerberos_demo.exe --scenario all
+**Entity**: `as_entity.py` - Lớp `AuthenticationServer`
+**Engine**: `as_engine.py` - Xử lý AS-REQ, AS-REP
+**Crypto**: `as_crypto.py` - Mã hóa/Giải mã của AS
+
+### 3. **Ticket Granting Server (TGS)**
+- Kiểm tra TGT và Authenticator từ Client
+- Cấp phát Service Ticket
+- Xử lý bản tin TGS-REQ, trả về TGS-REP
+
+**Entity**: `tgs_entity.py` - Lớp `TicketGrantingServer`
+**Engine**: `tgs_engine.py` - Xử lý TGS-REQ, TGS-REP
+**Crypto**: `tgs_crypto.py` - Mã hóa/Giải mã của TGS
+
+### 4. **Client**
+- Gửi AS-REQ để xin TGT
+- Gửi TGS-REQ để xin Service Ticket
+- Gửi AP-REQ để truy cập dịch vụ
+- Nhận AP-REP từ Service Server (Mutual Authentication)
+
+**Entity**: `client_entity.py` - Lớp `KerberosClient`
+**Engine**: `client_engine.py` - Thực hiện 3 pha giao tiếp
+**Crypto**: `client_crypto.py` - Mã hóa/Giải mã của Client
+
+### 5. **Service Server**
+- Nhận AP-REQ từ Client
+- Kiểm tra Service Ticket
+- Xác thực Authenticator với Timestamp
+- Phát hành AP-REP (Mutual Authentication)
+
+**Entity**: `service_entity.py` - Lớp `ServiceServer`
+**Engine**: `service_engine.py` - Xử lý AP-REQ, AP-REP
+**Crypto**: `service_crypto.py` - Mã hóa/Giải mã của Service Server
+
+### 6. **Models**
+Định nghĩa các lớp dữ liệu chung:
+- `Ticket`: Vé xác thực
+- `Authenticator`: Bộ xác thực
+- `Principal`: Thực thể (User, Service)
+- `ASRequest`, `ASReply`
+- `TGSRequest`, `TGSReply`
+- `APRequest`, `APReply`
+
+### 7. **Main.py**
+Điểm vào chương trình, mô phỏng quá trình:
+1. Khởi tạo các thực thể
+2. AS Exchange (Client xin TGT)
+3. TGS Exchange (Client xin Service Ticket)
+4. Application Exchange (Client truy cập dịch vụ)
+
+## Các pha giao tiếp
+
+### **Pha 1: AS Exchange (Xin TGT)**
+```
+Client                    AS
+  │                       │
+  │ 1. AS-REQ            │
+  ├──────────────────────>│
+  │  (client_id, nonce)  │
+  │                       │ Kiểm tra mật khẩu
+  │                       │ Tạo TGT
+  │                       │ Tạo K_c,tgs
+  │                       │
+  │ 2. AS-REP            │
+  │<──────────────────────┤
+  │  (TGT, K_c,tgs)      │
 ```
 
-Ban cung co the tu nhap thong so:
-
-```powershell
-.\build\kerberos_demo.exe --scenario custom --user alice --password alice_password_123 --service mail-service
+### **Pha 2: TGS Exchange (Xin Service Ticket)**
+```
+Client                    TGS
+  │                       │
+  │ 3. TGS-REQ           │
+  ├──────────────────────>│
+  │  (TGT, Authenticator)│
+  │                       │ Kiểm tra TGT
+  │                       │ Kiểm tra Authenticator
+  │                       │ Tạo Service Ticket
+  │                       │ Tạo K_c,s
+  │                       │
+  │ 4. TGS-REP           │
+  │<──────────────────────┤
+  │  (ST, K_c,s)         │
 ```
 
-Luu y: Log da duoc danh dau theo dung 3 pha/6 buoc de de map voi phan ly thuyet trong bao cao:
+### **Pha 3: Application Exchange (Xác thực 2 chiều)**
+```
+Client                    Service
+  │                       │
+  │ 5. AP-REQ            │
+  ├──────────────────────>│
+  │  (ST, Authenticator) │
+  │                       │ Kiểm tra ST
+  │                       │ Kiểm tra Authenticator
+  │                       │ Xác thực Client thành công
+  │                       │
+  │ 6. AP-REP            │
+  │<──────────────────────┤
+  │  (Timestamp + 1)     │ Mutual Authentication
+```
 
-- [Phase 1][Step 1-2]: AS Exchange
-- [Phase 2][Step 3-4]: TGS Exchange
-- [Phase 3][Step 5-6]: AP Exchange
+## Cách chạy
 
-## Y tuong mo rong cho bai tap lon
+```bash
+python main.py
+```
 
-- Them replay attack test co chu dong gui lai AP-REQ cu.
-- Them timestamp skew test (dong ho client lech qua nguong).
-- Thay co che ma hoa bang OpenSSL (AES-GCM) de nang muc ky thuat.
-- Them logging va ve sequence diagram cho tung message.
+## Kịch bản thử nghiệm
 
-## Goi y trinh bay bao cao
+**Scenario 1**: Đăng nhập thành công
+- Alice cung cấp mật khẩu đúng
+- Thực hiện thành công 3 pha
+- Truy cập dịch vụ thành công
 
-1. Dat van de va yeu cau xac thuc trong he thong client-server.
-2. Co so ly thuyet Kerberos: KDC, AS, TGS, ticket, session key.
-3. Thiet ke chuong trinh (class diagram + sequence diagram).
-4. Mo ta luong message va du lieu trong tung ban tin.
-5. Trinh bay ket qua chay va phan tich bao mat.
-6. Han che va huong phat trien.
+**Scenario 2**: Mật khẩu sai
+- Alice cung cấp mật khẩu sai
+- AS từ chối ở Pha 1
+- Không thể tiếp tục
+
+**Scenario 3**: Vé hết hạn
+- Mô phỏng kiểm tra thời hạn vé
+- Từ chối nếu vé hết hạn
+
+## Lưu ý
+
+- Mã hóa XOR Stream được sử dụng cho mục đích giáo dục. **Không dùng cho các ứng dụng thực tế.**
+- Timestamp được sử dụng để chống Replay Attack.
+- Authenticator chứa thông tin xác thực của Client.
+- Mỗi thực thể có hệ thống mã hóa riêng (để sau này có thể thay đổi độc lập).
+
+## Tài liệu tham khảo
+
+- RFC 1510: The Kerberos Network Authentication Service (V5)
+- RFC 4120: The Kerberos Network Authentication Service (V5) - Updated
+- Microsoft Kerberos Authentication Overview

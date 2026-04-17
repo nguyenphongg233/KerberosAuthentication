@@ -1,0 +1,64 @@
+"""
+Database Crypto: Hệ thống mã hóa của KDC Database
+(Hiện tại dùng XOR Stream, sau có thể thay đổi độc lập)
+"""
+
+import hashlib
+import json
+from typing import Any, Dict
+
+
+class DatabaseCryptoEngine:
+    """Engine mã hóa của Database"""
+    
+    NAME = "XOR_STREAM_V1"  # Tên hệ thống mã hóa
+    
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """Băm mật khẩu thành Master Key"""
+        return hashlib.sha256(password.encode()).hexdigest()[:32]
+    
+    @staticmethod
+    def encrypt(plaintext: str, key: str) -> str:
+        """Mã hóa XOR Stream"""
+        if not plaintext or not key:
+            return ""
+        
+        key_extended = (key * (len(plaintext) // len(key) + 1))[:len(plaintext)]
+        encrypted = bytes(
+            ord(p) ^ ord(k) for p, k in zip(plaintext, key_extended)
+        )
+        return encrypted.hex()
+    
+    @staticmethod
+    def decrypt(ciphertext_hex: str, key: str) -> str:
+        """Giải mã XOR Stream"""
+        if not ciphertext_hex or not key:
+            return ""
+        
+        try:
+            ciphertext = bytes.fromhex(ciphertext_hex)
+            key_extended = (key * (len(ciphertext) // len(key) + 1))[:len(ciphertext)]
+            plaintext = ''.join(
+                chr(c ^ ord(k)) for c, k in zip(ciphertext, key_extended)
+            )
+            return plaintext
+        except Exception:
+            return ""
+    
+    @staticmethod
+    def encrypt_dict(data: Dict[str, Any], key: str) -> str:
+        """Mã hóa dictionary"""
+        json_str = json.dumps(data)
+        return DatabaseCryptoEngine.encrypt(json_str, key)
+    
+    @staticmethod
+    def decrypt_dict(ciphertext_hex: str, key: str) -> Dict[str, Any]:
+        """Giải mã thành dictionary"""
+        plaintext = DatabaseCryptoEngine.decrypt(ciphertext_hex, key)
+        if not plaintext:
+            return {}
+        try:
+            return json.loads(plaintext)
+        except:
+            return {}
