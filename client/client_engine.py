@@ -87,14 +87,16 @@ class ClientEngine:
         authenticator = Authenticator(
             client_id=self.client_entity.client_id,
             timestamp=get_current_timestamp(),
-            client_address="127.0.0.1"
+            client_address=self.client_entity.client_address,
+            realm=self.client_entity.realm
         )
         
         # Mã hóa Authenticator bằng K_c,tgs
         auth_data = {
             "client_id": authenticator.client_id,
             "timestamp": authenticator.timestamp,
-            "client_address": authenticator.client_address
+            "client_address": authenticator.client_address,
+            "realm": authenticator.realm
         }
         authenticator.encrypted_data = self.crypto.encrypt_dict(
             auth_data, self.client_entity.session_key_c_tgs
@@ -150,14 +152,16 @@ class ClientEngine:
         authenticator = Authenticator(
             client_id=self.client_entity.client_id,
             timestamp=get_current_timestamp(),
-            client_address="127.0.0.1"
+            client_address=self.client_entity.client_address,
+            realm=self.client_entity.realm
         )
         
         # Mã hóa Authenticator bằng K_c,s
         auth_data = {
             "client_id": authenticator.client_id,
             "timestamp": authenticator.timestamp,
-            "client_address": authenticator.client_address
+            "client_address": authenticator.client_address,
+            "realm": authenticator.realm
         }
         authenticator.encrypted_data = self.crypto.encrypt_dict(
             auth_data, self.client_entity.session_key_c_s

@@ -62,8 +62,15 @@ class ServiceEngine:
             )
         
         # Bước 4: Kiểm tra server_id trong Service Ticket là dịch vụ này không
-        if ap_request.service_ticket.server_id != self.service_entity.service_name:
-            error_msg = f"Service mismatch: expected {self.service_entity.service_name}, got {ap_request.service_ticket.server_id}"
+        # So sánh cả dạng "service_name" và "service_name/instance@realm"
+        service_names = [
+            self.service_entity.service_name,
+            self.service_entity.full_name,
+            f"{self.service_entity.service_name}@{self.service_entity.realm}"
+        ]
+        
+        if ap_request.service_ticket.server_id not in service_names:
+            error_msg = f"Service mismatch: expected {self.service_entity.full_name}, got {ap_request.service_ticket.server_id}"
             log_error("Service", error_msg)
             return APReply(
                 client_timestamp_proof=0,

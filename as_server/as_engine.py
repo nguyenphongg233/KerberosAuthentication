@@ -38,8 +38,10 @@ class ASEngine:
             return ASReply(
                 client_id=as_request.client_id,
                 tgt=None,
+                server_id=as_request.server_id,
                 session_key_c_tgs="",
                 server_timestamp=time.time(),
+                lifetime=as_request.lifetime,
                 nonce=as_request.nonce,
                 ok=False,
                 error_message=error_msg
@@ -52,9 +54,11 @@ class ASEngine:
             log_error("AS", error_msg)
             return ASReply(
                 client_id=as_request.client_id,
-                tgt=None,
+                tgt = None,
+                server_id=as_request.server_id,
                 session_key_c_tgs="",
                 server_timestamp=time.time(),
+                lifetime=as_request.lifetime,
                 nonce=as_request.nonce,
                 ok=False,
                 error_message=error_msg
@@ -72,8 +76,10 @@ class ASEngine:
             return ASReply(
                 client_id=as_request.client_id,
                 tgt=None,
+                server_id=as_request.server_id,
                 session_key_c_tgs="",
                 server_timestamp=time.time(),
+                lifetime=as_request.lifetime,
                 nonce=as_request.nonce,
                 ok=False,
                 error_message=error_msg
@@ -93,7 +99,10 @@ class ASEngine:
             session_key=session_key_c_tgs,
             timestamp=server_timestamp,
             lifetime=as_request.lifetime,
-            client_address="127.0.0.1"
+            client_address=self.as_entity.server_address,
+            realm=self.as_entity.realm,
+            ticket_type="TGT",
+            nonce=as_request.nonce
         )
         
         # Bước 6: Mã hóa TGT bằng khóa của TGS (AS có khóa này)
@@ -103,19 +112,37 @@ class ASEngine:
             "session_key": tgt.session_key,
             "timestamp": tgt.timestamp,
             "lifetime": tgt.lifetime,
-            "client_address": tgt.client_address
+            "client_address": tgt.client_address,
+            "realm": tgt.realm,
+            "ticket_type": tgt.ticket_type,
+            "nonce": tgt.nonce
         }
         tgt.encrypted_data = self.crypto.encrypt_dict(tgt_data, self.as_entity.master_key)
         
         log_success("AS", f"Created and encrypted TGT for {as_request.client_id}")
         
-        # Bước 7: Trả về AS-REP
+        # Bước 7: Tạo Client_Portion và mã hóa bằng khóa của Client
+        # Client_Portion = E_{K_c}[Kc,tgs || IDtgs || TS2 || Lifetime2 || Nonce1]
+        client_portion_data = {
+            "session_key": session_key_c_tgs,
+            "server_id": as_request.server_id,
+            "timestamp": server_timestamp,
+            "lifetime": as_request.lifetime,
+            "nonce": as_request.nonce
+        }
+        client_portion_encrypted = self.crypto.encrypt_dict(client_portion_data, client_master_key)
+        log_debug("AS", f"Encrypted Client_Portion for {as_request.client_id}")
+        
+        # Bước 8: Trả về AS-REP
         as_reply = ASReply(
             client_id=as_request.client_id,
             tgt=tgt,
+            server_id=as_request.server_id,
             session_key_c_tgs=session_key_c_tgs,
             server_timestamp=server_timestamp,
+            lifetime=as_request.lifetime,
             nonce=as_request.nonce,
+            client_portion_encrypted=client_portion_encrypted,
             ok=True,
             error_message=""
         )

@@ -86,6 +86,11 @@ class TGSEngine:
                 error_message=error_msg
             )
         
+        # Bước 4b: Đăng ký service key vào TGS (nếu chưa có)
+        if tgs_request.server_id not in self.tgs_entity.service_keys:
+            self.tgs_entity.register_service(tgs_request.server_id, service_master_key)
+            log_debug("TGS", f"Registered service {tgs_request.server_id} with its key")
+        
         # Bước 5: Tạo Session Key cho Client-Service
         session_key_c_s = generate_session_key()
         log_debug("TGS", f"Generated session key K_c,s")
@@ -98,7 +103,10 @@ class TGSEngine:
             session_key=session_key_c_s,
             timestamp=server_timestamp,
             lifetime=tgs_request.lifetime,
-            client_address="127.0.0.1"
+            client_address=self.tgs_entity.server_address,
+            realm=self.tgs_entity.realm,
+            ticket_type="ST",
+            nonce=tgs_request.tgt.nonce
         )
         
         # Bước 7: Mã hóa Service Ticket bằng khóa của Service
@@ -108,7 +116,10 @@ class TGSEngine:
             "session_key": service_ticket.session_key,
             "timestamp": service_ticket.timestamp,
             "lifetime": service_ticket.lifetime,
-            "client_address": service_ticket.client_address
+            "client_address": service_ticket.client_address,
+            "realm": service_ticket.realm,
+            "ticket_type": service_ticket.ticket_type,
+            "nonce": service_ticket.nonce
         }
         service_ticket.encrypted_data = self.crypto.encrypt_dict(st_data, service_master_key)
         

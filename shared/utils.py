@@ -78,3 +78,60 @@ def section_header(title: str, char: str = "=", length: int = 80):
     padding = (length - len(title) - 4) // 2
     print(f"{char * padding}  {title}  {char * padding}")
     separator(char, length)
+
+
+# ========== Chi tiết Request/Reply Log ==========
+
+def log_as_request_details(as_request):
+    """Log chi tiết AS-REQ"""
+    log_debug("→ AS-REQ", f"client_id={as_request.client_id}")
+    log_debug("→ AS-REQ", f"server_id={as_request.server_id}")
+    log_debug("→ AS-REQ", f"timestamp={as_request.timestamp:.2f}")
+    log_debug("→ AS-REQ", f"nonce={as_request.nonce[:12]}...")
+    log_debug("→ AS-REQ", f"lifetime={as_request.lifetime}s")
+
+
+def log_as_reply_details(as_reply):
+    """Log chi tiết AS-REP"""
+    if as_reply.ok:
+        log_debug("← AS-REP", f"client_id={as_reply.client_id}")
+        log_debug("← AS-REP", f"TGT=Ticket(type=TGT, client={as_reply.tgt.client_id}, lifetime={as_reply.tgt.lifetime}s)")
+        log_debug("← AS-REP", f"session_key_c_tgs={as_reply.session_key_c_tgs[:16]}...")
+        log_debug("← AS-REP", f"server_timestamp={as_reply.server_timestamp:.2f}")
+    else:
+        log_error("← AS-REP", f"ERROR: {as_reply.error_message}")
+
+
+def log_tgs_request_details(tgs_request):
+    """Log chi tiết TGS-REQ"""
+    log_debug("→ TGS-REQ", f"client_id={tgs_request.client_id}")
+    log_debug("→ TGS-REQ", f"server_id={tgs_request.server_id}")
+    log_debug("→ TGS-REQ", f"TGT=Ticket(type={tgs_request.tgt.ticket_type}, lifetime={tgs_request.tgt.lifetime}s)")
+    log_debug("→ TGS-REQ", f"Authenticator(client_id={tgs_request.authenticator.client_id}, timestamp={tgs_request.authenticator.timestamp:.2f})")
+    log_debug("→ TGS-REQ", f"lifetime={tgs_request.lifetime}s")
+
+
+def log_tgs_reply_details(tgs_reply):
+    """Log chi tiết TGS-REP"""
+    if tgs_reply.ok:
+        log_debug("← TGS-REP", f"client_id={tgs_reply.client_id}")
+        log_debug("← TGS-REP", f"Service Ticket=Ticket(type=ST, server={tgs_reply.service_ticket.server_id}, lifetime={tgs_reply.service_ticket.lifetime}s)")
+        log_debug("← TGS-REP", f"session_key_c_s={tgs_reply.session_key_c_s[:16]}...")
+        log_debug("← TGS-REP", f"server_timestamp={tgs_reply.server_timestamp:.2f}")
+    else:
+        log_error("← TGS-REP", f"ERROR: {tgs_reply.error_message}")
+
+
+def log_ap_request_details(ap_request):
+    """Log chi tiết AP-REQ"""
+    log_debug("→ AP-REQ", f"Service Ticket=Ticket(type={ap_request.service_ticket.ticket_type}, client={ap_request.service_ticket.client_id})")
+    log_debug("→ AP-REQ", f"Authenticator(client_id={ap_request.authenticator.client_id}, timestamp={ap_request.authenticator.timestamp:.2f})")
+
+
+def log_ap_reply_details(ap_reply):
+    """Log chi tiết AP-REP"""
+    if ap_reply.ok:
+        log_debug("← AP-REP", f"client_timestamp_proof={ap_reply.client_timestamp_proof:.2f} (Timestamp + 1 = Mutual Auth)")
+        log_debug("← AP-REP", f"server_timestamp={ap_reply.server_timestamp:.2f}")
+    else:
+        log_error("← AP-REP", f"ERROR: {ap_reply.error_message}")

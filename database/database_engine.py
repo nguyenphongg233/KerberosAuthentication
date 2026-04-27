@@ -22,6 +22,7 @@ class DatabaseEngine:
         tgs_principal = Principal(
             name="krbtgt",
             realm=self.database.realm,
+            principal_type="service",
             master_key=self.crypto.hash_password("TGS_SECRET_KEY")
         )
         self.database.add_principal(tgs_principal)
@@ -31,6 +32,7 @@ class DatabaseEngine:
         mail_principal = Principal(
             name="mail-service",
             realm=self.database.realm,
+            principal_type="service",
             master_key=self.crypto.hash_password("MAIL_SERVICE_SECRET")
         )
         self.database.add_principal(mail_principal)
@@ -40,6 +42,7 @@ class DatabaseEngine:
         alice_principal = Principal(
             name="alice",
             realm=self.database.realm,
+            principal_type="user",
             password_hash=self.crypto.hash_password("alice_password_123")
         )
         self.database.add_principal(alice_principal)
