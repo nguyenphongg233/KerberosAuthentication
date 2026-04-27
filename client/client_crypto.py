@@ -4,6 +4,7 @@ Client Crypto: Hệ thống mã hóa của Client
 """
 
 import json
+import hashlib
 from typing import Any, Dict
 
 
@@ -11,6 +12,11 @@ class ClientCryptoEngine:
     """Engine mã hóa của Client"""
     
     NAME = "XOR_STREAM_V1"  # Tên hệ thống mã hóa
+    
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """Băm mật khẩu thành Master Key"""
+        return hashlib.sha256(password.encode()).hexdigest()[:32]
     
     @staticmethod
     def encrypt(plaintext: str, key: str) -> str:

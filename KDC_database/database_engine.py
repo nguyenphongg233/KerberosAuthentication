@@ -2,9 +2,9 @@
 Database Engine: Logic xử lý của KDC Database
 """
 
-from database.database_entity import KDCDatabaseEntity, Principal
-from database.database_crypto import DatabaseCryptoEngine
-from shared.utils import log_info, log_success, log_error, log_debug
+from KDC_database.database_entity import KDCDatabaseEntity, Principal
+from KDC_database.database_crypto import DatabaseCryptoEngine
+from utils import log_info, log_success, log_error, log_debug
 
 
 class DatabaseEngine:
@@ -47,6 +47,16 @@ class DatabaseEngine:
         )
         self.database.add_principal(alice_principal)
         log_success("Database", f"Added Principal: {alice_principal}")
+    
+    def add_principal(self, principal: Principal):
+        """Thêm một Principal mới vào database"""
+        if self.database.principal_exists(f"{principal.name}@{principal.realm}"):
+            log_error("Database", f"Principal already exists: {principal.name}@{principal.realm}")
+            return False
+        
+        self.database.add_principal(principal)
+        log_success("Database", f"Added Principal: {principal}")
+        return True
     
     def get_principal_master_key(self, principal_name: str) -> str:
         """Lấy Master Key của một Principal"""

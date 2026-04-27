@@ -23,12 +23,13 @@ class KerberosClientEntity:
     
     # Vé và khóa được lưu trong RAM của Client
     tgt: Optional[Ticket] = None
-    session_key_c_tgs: str = ""
+    session_key_c_tgs: Optional[str] = None
     service_ticket: Optional[Ticket] = None
-    session_key_c_s: str = ""
+    session_key_c_s: Optional[str] = None
     
     # Thông tin caches
-    tgs_id: str = "krbtgt"  # Định danh TGS (mặc định)
+    tgs_id: Optional[str] = "krbtgt"  # Định danh TGS (mặc định)
+    last_as_nonce: Optional[str] = None  # Nonce từ AS-REQ (để xác minh AS-REP)
     
     def __repr__(self) -> str:
         tgt_status = "has_TGT" if self.tgt else "no_TGT"
