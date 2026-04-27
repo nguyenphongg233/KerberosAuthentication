@@ -6,8 +6,8 @@ import time
 from models import ASRequest, ASReply, Ticket
 from as_server.as_entity import AuthenticationServerEntity
 from as_server.as_crypto import ASCryptoEngine
-from database.database_engine import DatabaseEngine
-from shared.utils import log_info, log_success, log_error, log_debug, generate_session_key
+from KDC_database.database_engine import DatabaseEngine
+from utils import log_info, log_success, log_error, log_debug, generate_session_key
 
 
 class ASEngine:
@@ -67,7 +67,7 @@ class ASEngine:
         # Bước 3: Xác minh mật khẩu (so sánh hash)
         expected_key = self.crypto.encrypt(client_password, "")  # Placeholder
         # Thực tế so sánh Master Key bằng hàm hash
-        from database.database_crypto import DatabaseCryptoEngine
+        from KDC_database.database_crypto import DatabaseCryptoEngine
         password_hash = DatabaseCryptoEngine.hash_password(client_password)
         
         if password_hash != client_master_key:

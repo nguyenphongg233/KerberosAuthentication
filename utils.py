@@ -1,5 +1,5 @@
 """
-Shared Utils: Các hàm tiện ích chung
+Utils: Các hàm tiện ích chung
 """
 
 import time
@@ -64,6 +64,10 @@ def log_error(entity: str, message: str):
 
 def log_debug(entity: str, message: str):
     """In log DEBUG"""
+    if entity == None:
+        entity = "None"
+    if message == None: 
+        message = "None"
     print(format_log(entity, "DEBUG", message))
 
 
