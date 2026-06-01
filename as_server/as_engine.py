@@ -18,13 +18,11 @@ class ASEngine:
         self.db_engine = db_engine
         self.crypto = ASCryptoEngine()
     
-    def process_as_request(self, as_request: ASRequest, client_password: str) -> ASReply:
+    def process_as_request(self, as_request: ASRequest) -> ASReply:
         """Xử lý AS-REQ từ Client
         
         Args:
             as_request: AS-REQ message
-            client_password: Mật khẩu của Client (để xác minh)
-        
         Returns:
             AS-REP message
         """
@@ -64,28 +62,10 @@ class ASEngine:
                 error_message=error_msg
             )
         
-        # Bước 3: Xác minh mật khẩu (so sánh hash)
-        expected_key = self.crypto.encrypt(client_password, "")  # Placeholder
-        # Thực tế so sánh Master Key bằng hàm hash
-        from KDC_database.database_crypto import DatabaseCryptoEngine
-        password_hash = DatabaseCryptoEngine.hash_password(client_password)
-        
-        if password_hash != client_master_key:
-            error_msg = f"Authentication failed for {as_request.client_id}: Wrong password"
-            log_error("AS", error_msg)
-            return ASReply(
-                client_id=as_request.client_id,
-                tgt=None,
-                server_id=as_request.server_id,
-                session_key_c_tgs="",
-                server_timestamp=time.time(),
-                lifetime=as_request.lifetime,
-                nonce=as_request.nonce,
-                ok=False,
-                error_message=error_msg
-            )
-        
-        log_success("AS", f"Client {as_request.client_id} authenticated successfully")
+        # Step 3: AS does not receive the user's password over the network.
+        # It encrypts the client portion with Kc from the database. If the
+        # user types a wrong password, the client cannot decrypt AS-REP.
+        log_success("AS", f"Client principal {as_request.client_id} found; issuing AS-REP")
         
         # Bước 4: Tạo Session Key cho Client-TGS
         session_key_c_tgs = generate_session_key()
@@ -99,7 +79,7 @@ class ASEngine:
             session_key=session_key_c_tgs,
             timestamp=server_timestamp,
             lifetime=as_request.lifetime,
-            client_address=self.as_entity.server_address,
+            client_address=getattr(as_request, "client_address", "127.0.0.1"),
             realm=self.as_entity.realm,
             ticket_type="TGT",
             nonce=as_request.nonce

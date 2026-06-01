@@ -90,6 +90,7 @@ class ASRequest:
     timestamp: float  # TS1
     nonce: str  # Nonce1
     lifetime: int = 28800  # Lifetime1 (8 tiếng)
+    client_address: str = "127.0.0.1"
 
 
 @dataclass
@@ -129,6 +130,7 @@ class TGSRequest:
     server_id: str  # IDv (Service Server)
     tgt: Ticket
     authenticator: Authenticator
+    nonce: str = ""  # Nonce2 de ghep noi TGS-REQ va TGS-REP
     lifetime: int = 3600  # 1 tiếng
 
 
@@ -144,6 +146,8 @@ class TGSReply:
     service_ticket: Ticket
     session_key_c_s: str  # Khóa phiên Kc,v
     server_timestamp: float  # TS4
+    nonce: str = ""  # Nonce2 (phan hoi)
+    client_portion_encrypted: str = ""  # E_Kc,tgs[Kc,v || IDv || TS4 || Nonce2]
     ok: bool = True
     error_message: str = ""
 
@@ -170,5 +174,6 @@ class APReply:
     """
     client_timestamp_proof: float  # Timestamp + 1
     server_timestamp: float
+    server_proof_encrypted: str = ""  # E_Kc,v[TS5 + 1 || server_timestamp]
     ok: bool = True
     error_message: str = ""
