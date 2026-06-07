@@ -1,87 +1,143 @@
-"""
-credential_cache.py - In-memory storage for TGT and Session Keys.
+"""Persistent credential cache for the Kerberos demo client."""
 
-Provides a simple credential cache that the client uses to store
-and retrieve tickets and session keys obtained during the Kerberos
-authentication process.
-"""
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+
+from core.crypto import key_to_str, str_to_key
+
+
+DEFAULT_CACHE_PATH = os.getenv(
+    "KRB5CCNAME",
+    os.path.join(os.path.dirname(__file__), "krb5cc_demo.json"),
+)
 
 
 class CredentialCache:
     """
-    In-memory credential cache for Kerberos tickets and session keys.
+    Minimal file-backed credential cache.
 
-    Stores:
-        - TGT and client-TGS session key (from AS Exchange)
-        - Service Ticket and client-service session key (from TGS Exchange)
+    This is intentionally simpler than a real Kerberos credential cache, but it
+    persists TGTs and service tickets across client process runs until ticket
+    endtime or manual cache clearing.
     """
 
-    def __init__(self):
-        """Initialize an empty credential cache."""
+    def __init__(self, path: str = DEFAULT_CACHE_PATH):
+        self.path = path
         self._tgt = None
         self._client_tgs_session_key = None
-        self._service_tickets = {}  # service_principal -> (ticket, session_key)
+        self._tgt_metadata = {}
+        self._service_tickets = {}
+        self._load()
 
-    def store_tgt(self, tgt: str, client_tgs_session_key: bytes):
-        """
-        Store the TGT and associated session key.
-
-        Args:
-            tgt: The encrypted TGT string.
-            client_tgs_session_key: The session key for Client ↔ TGS communication.
-        """
+    def store_tgt(self, tgt: str, client_tgs_session_key: bytes,
+                  metadata: dict | None = None):
         self._tgt = tgt
         self._client_tgs_session_key = client_tgs_session_key
+        self._tgt_metadata = metadata or {}
+        self._save()
 
     def get_tgt(self) -> tuple:
-        """
-        Retrieve the stored TGT and session key.
-
-        Returns:
-            Tuple of (tgt, client_tgs_session_key), or (None, None) if not cached.
-        """
+        if self._tgt is None:
+            return None, None
+        if self._expired(self._tgt_metadata):
+            self._tgt = None
+            self._client_tgs_session_key = None
+            self._tgt_metadata = {}
+            self._save()
+            return None, None
         return self._tgt, self._client_tgs_session_key
 
     def store_service_ticket(self, service_principal: str,
-                              service_ticket: str,
-                              client_service_session_key: bytes):
-        """
-        Store a service ticket and associated session key.
-
-        Args:
-            service_principal: The name of the target service.
-            service_ticket: The encrypted service ticket string.
-            client_service_session_key: The session key for Client ↔ Service communication.
-        """
-        self._service_tickets[service_principal] = (
-            service_ticket, client_service_session_key
-        )
+                             service_ticket: str,
+                             client_service_session_key: bytes,
+                             metadata: dict | None = None):
+        self._service_tickets[service_principal] = {
+            "ticket": service_ticket,
+            "session_key": client_service_session_key,
+            "metadata": metadata or {},
+        }
+        self._save()
 
     def get_service_ticket(self, service_principal: str) -> tuple:
-        """
-        Retrieve a stored service ticket and session key.
-
-        Args:
-            service_principal: The name of the target service.
-
-        Returns:
-            Tuple of (service_ticket, client_service_session_key),
-            or (None, None) if not cached.
-        """
-        if service_principal in self._service_tickets:
-            return self._service_tickets[service_principal]
-        return None, None
+        entry = self._service_tickets.get(service_principal)
+        if not entry:
+            return None, None
+        if self._expired(entry.get("metadata", {})):
+            del self._service_tickets[service_principal]
+            self._save()
+            return None, None
+        return entry["ticket"], entry["session_key"]
 
     def clear(self):
-        """Clear all cached credentials."""
         self._tgt = None
         self._client_tgs_session_key = None
+        self._tgt_metadata = {}
         self._service_tickets.clear()
+        self._save()
 
     def has_tgt(self) -> bool:
-        """Check if a TGT is currently cached."""
-        return self._tgt is not None
+        tgt, _ = self.get_tgt()
+        return tgt is not None
 
     def has_service_ticket(self, service_principal: str) -> bool:
-        """Check if a service ticket is cached for the given service."""
-        return service_principal in self._service_tickets
+        ticket, _ = self.get_service_ticket(service_principal)
+        return ticket is not None
+
+    def _expired(self, metadata: dict) -> bool:
+        try:
+            endtime = float(metadata.get("endtime", 0))
+        except (TypeError, ValueError):
+            return False
+        return bool(endtime) and time.time() > endtime
+
+    def _load(self):
+        if not os.path.exists(self.path):
+            return
+        try:
+            payload = json.loads(Path(self.path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        tgt_payload = payload.get("tgt")
+        if tgt_payload:
+            self._tgt = tgt_payload.get("ticket")
+            key_text = tgt_payload.get("session_key")
+            self._client_tgs_session_key = str_to_key(key_text) if key_text else None
+            self._tgt_metadata = tgt_payload.get("metadata", {})
+
+        for service_principal, entry in payload.get("service_tickets", {}).items():
+            key_text = entry.get("session_key")
+            if key_text:
+                self._service_tickets[service_principal] = {
+                    "ticket": entry.get("ticket"),
+                    "session_key": str_to_key(key_text),
+                    "metadata": entry.get("metadata", {}),
+                }
+
+    def _save(self):
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        service_tickets = {}
+        for service_principal, entry in self._service_tickets.items():
+            service_tickets[service_principal] = {
+                "ticket": entry["ticket"],
+                "session_key": key_to_str(entry["session_key"]),
+                "metadata": entry.get("metadata", {}),
+            }
+
+        payload = {
+            "format": "kerberos-demo-ccache-v1",
+            "tgt": None,
+            "service_tickets": service_tickets,
+        }
+        if self._tgt and self._client_tgs_session_key:
+            payload["tgt"] = {
+                "ticket": self._tgt,
+                "session_key": key_to_str(self._client_tgs_session_key),
+                "metadata": self._tgt_metadata,
+            }
+
+        Path(self.path).write_text(json.dumps(payload, indent=2), encoding="utf-8")

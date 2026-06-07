@@ -1,1 +1,5 @@
 */__pycache__/*
+__pycache__/
+build/
+*.keytab.json
+client/krb5cc*.json

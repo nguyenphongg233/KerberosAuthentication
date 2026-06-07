@@ -1,155 +1,230 @@
 """
-tgs_handler.py - Ticket-Granting Server (TGS) logic for KDC.
-
-Handles Phase 2 of the Kerberos protocol (TGS Exchange):
-    Client sends TGS_REQ with TGT + Authenticator →
-    TGS validates → TGS sends TGS_REP with Service Ticket.
+tgs_handler.py - Ticket Granting Server (TGS) logic for the demo KDC.
 """
 
-import time
-import sys
 import os
+import sys
+import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cryptography.fernet import InvalidToken
 
-from core.crypto import encrypt, decrypt, generate_session_key, key_to_str, str_to_key
+from core.crypto import decrypt, encrypt, generate_session_key, key_to_str, str_to_key
 from core.messages import (
-    TGS_REP, ERROR,
-    KDC_ERR_S_PRINCIPAL_UNKNOWN, KRB_AP_ERR_MODIFIED,
-    KRB_AP_ERR_SKEW, KRB_AP_ERR_TKT_EXPIRED, KRB_ERR_GENERIC,
-    TGS_PRINCIPAL, TICKET_LIFETIME, MAX_CLOCK_SKEW
+    ERROR,
+    KDC_ERR_S_PRINCIPAL_UNKNOWN,
+    KDC_ERR_WRONG_REALM,
+    KRB_AP_ERR_MODIFIED,
+    KRB_AP_ERR_REPEAT,
+    KRB_AP_ERR_SKEW,
+    KRB_AP_ERR_TKT_EXPIRED,
+    MAX_CLOCK_SKEW,
+    REALM,
+    SERVICE_TICKET_FLAGS,
+    TGS_PRINCIPAL,
+    TGS_REP,
+    TICKET_LIFETIME,
 )
+from core.replay_cache import authenticator_cache_key, check_and_store
+from kdc.database import audit_event, get_principal
 
 
 def handle_tgs_request(request: dict, db_cursor) -> dict:
-    """
-    Process a TGS_REQ and return a TGS_REP with a Service Ticket.
-
-    TGS Exchange Flow:
-        1. Client sends TGS_REQ with: service_principal, TGT, authenticator.
-        2. TGS decrypts TGT with its own master key → gets client_tgs_session_key.
-        3. TGS decrypts authenticator with client_tgs_session_key → validates timestamp.
-        4. TGS generates a client-service session key.
-        5. TGS creates a service ticket encrypted with the service's master key.
-        6. TGS creates TGS_REP encrypted with client_tgs_session_key.
-
-    Args:
-        request: The TGS_REQ message dictionary.
-        db_cursor: SQLite database cursor for principal lookups.
-
-    Returns:
-        TGS_REP or KRB_ERROR message dictionary.
-    """
-    service_principal = request.get("service_principal")
+    """Process TGS_REQ and return TGS_REP with a service ticket."""
+    requested_service = request.get("service_principal")
+    requested_realm = str(request.get("realm", REALM)).upper()
     encrypted_tgt = request.get("tgt")
     encrypted_authenticator = request.get("authenticator")
+    request_nonce = request.get("nonce")
 
-    print(f"  [TGS] Received TGS_REQ for service '{service_principal}'")
+    print(f"  [TGS] Received TGS_REQ for service '{requested_service}'")
 
-    # ── Step 1: Get TGS master key and decrypt TGT ───────────────
-    db_cursor.execute(
-        "SELECT secret_key FROM principals WHERE principal_name = ?",
-        (TGS_PRINCIPAL,)
-    )
-    tgs_row = db_cursor.fetchone()
+    if not requested_service or not encrypted_tgt or not encrypted_authenticator:
+        return _error(KRB_AP_ERR_MODIFIED,
+                      "TGS_REQ missing service principal, TGT, or authenticator.")
 
-    if tgs_row is None:
-        return _error(KRB_ERR_GENERIC, "Internal error: TGS principal not found.")
+    if requested_realm != REALM:
+        audit_event(db_cursor, "TGS", "tgs_req", None, "failure",
+                    {"error": KDC_ERR_WRONG_REALM, "realm": requested_realm})
+        return _error(KDC_ERR_WRONG_REALM,
+                      f"KDC does not serve realm '{requested_realm}'.")
 
-    tgs_master_key = str_to_key(tgs_row[0])
+    tgs_record = get_principal(db_cursor, TGS_PRINCIPAL)
+    if tgs_record is None:
+        return _error(KRB_AP_ERR_MODIFIED,
+                      "Internal error: TGS principal not found.")
 
+    tgs_master_key = str_to_key(tgs_record["key"])
     try:
         tgt = decrypt(encrypted_tgt, tgs_master_key)
     except InvalidToken:
-        print(f"  [TGS] ERROR: Failed to decrypt TGT (tampered or invalid).")
-        return _error(KRB_AP_ERR_MODIFIED, "TGT decryption failed - ticket may be tampered.")
+        print("  [TGS] ERROR: Failed to decrypt TGT.")
+        audit_event(db_cursor, "TGS", "tgt_decrypt", None, "failure",
+                    {"error": KRB_AP_ERR_MODIFIED})
+        return _error(KRB_AP_ERR_MODIFIED,
+                      "TGT decryption failed - ticket may be tampered.")
 
-    # ── Step 2: Check TGT expiration ─────────────────────────────
-    tgt_timestamp = tgt.get("timestamp", 0)
-    tgt_lifetime = tgt.get("lifetime", 0)
-    current_time = time.time()
+    if tgt.get("server_principal", tgt.get("tgs_principal")) != TGS_PRINCIPAL:
+        audit_event(db_cursor, "TGS", "tgt_validate",
+                    tgt.get("client_principal"), "failure",
+                    {"error": "wrong_tgs_principal"})
+        return _error(KRB_AP_ERR_MODIFIED, "TGT is not for this TGS.")
 
-    if current_time > tgt_timestamp + tgt_lifetime:
-        print(f"  [TGS] ERROR: TGT has expired.")
+    if str(tgt.get("realm", REALM)).upper() != REALM:
+        audit_event(db_cursor, "TGS", "tgt_validate",
+                    tgt.get("client_principal"), "failure",
+                    {"error": "wrong_realm"})
+        return _error(KDC_ERR_WRONG_REALM, "TGT is for another realm.")
+
+    client_principal = tgt.get("client_principal")
+    session_key_text = tgt.get("client_tgs_session_key")
+    if not client_principal or not session_key_text:
+        return _error(KRB_AP_ERR_MODIFIED, "Malformed TGT.")
+
+    now = time.time()
+    if _ticket_expired(tgt, now):
+        print("  [TGS] ERROR: TGT has expired.")
+        audit_event(db_cursor, "TGS", "tgt_validate", client_principal,
+                    "failure", {"error": KRB_AP_ERR_TKT_EXPIRED})
         return _error(KRB_AP_ERR_TKT_EXPIRED, "TGT has expired.")
 
-    # ── Step 3: Decrypt authenticator with client-TGS session key ─
-    client_tgs_session_key = str_to_key(tgt["client_tgs_session_key"])
-    client_principal = tgt["client_principal"]
-
+    client_tgs_session_key = str_to_key(session_key_text)
     try:
         authenticator = decrypt(encrypted_authenticator, client_tgs_session_key)
     except InvalidToken:
-        print(f"  [TGS] ERROR: Failed to decrypt authenticator.")
+        print("  [TGS] ERROR: Failed to decrypt authenticator.")
+        audit_event(db_cursor, "TGS", "authenticator_decrypt",
+                    client_principal, "failure",
+                    {"error": KRB_AP_ERR_MODIFIED})
         return _error(KRB_AP_ERR_MODIFIED, "Authenticator decryption failed.")
 
-    # ── Step 4: Validate authenticator ───────────────────────────
-    # Check that the principal in authenticator matches the TGT
-    if authenticator.get("client_principal") != client_principal:
-        print(f"  [TGS] ERROR: Authenticator principal mismatch.")
-        return _error(KRB_AP_ERR_MODIFIED, "Authenticator principal does not match TGT.")
+    auth_client = authenticator.get("client_principal")
+    if auth_client != client_principal:
+        print("  [TGS] ERROR: Authenticator principal mismatch.")
+        return _error(KRB_AP_ERR_MODIFIED,
+                      "Authenticator principal does not match TGT.")
 
-    # Check timestamp for replay attack prevention
-    auth_timestamp = authenticator.get("timestamp", 0)
-    if abs(current_time - auth_timestamp) > MAX_CLOCK_SKEW:
-        print(f"  [TGS] ERROR: Clock skew too great (replay attack suspected).")
+    auth_timestamp = _authenticator_timestamp(authenticator)
+    if auth_timestamp is None:
+        return _error(KRB_AP_ERR_MODIFIED, "Invalid authenticator timestamp.")
+
+    if abs(now - auth_timestamp) > MAX_CLOCK_SKEW:
+        print("  [TGS] ERROR: Clock skew too great.")
+        audit_event(db_cursor, "TGS", "authenticator_validate",
+                    client_principal, "failure",
+                    {"error": KRB_AP_ERR_SKEW})
         return _error(KRB_AP_ERR_SKEW, "Clock skew too great.")
 
-    # ── Step 5: Look up the service's master key ─────────────────
-    db_cursor.execute(
-        "SELECT secret_key FROM principals WHERE principal_name = ?",
-        (service_principal,)
+    cache_key = authenticator_cache_key(
+        client_principal,
+        requested_service,
+        auth_timestamp,
+        authenticator.get("cusec"),
     )
-    service_row = db_cursor.fetchone()
+    if check_and_store("TGS", cache_key, client_principal, requested_service,
+                       auth_timestamp, now, MAX_CLOCK_SKEW):
+        print("  [TGS] ERROR: Replayed authenticator detected.")
+        audit_event(db_cursor, "TGS", "authenticator_replay",
+                    client_principal, "failure",
+                    {"service": requested_service})
+        return _error(KRB_AP_ERR_REPEAT, "Replayed authenticator detected.")
 
-    if service_row is None:
-        print(f"  [TGS] ERROR: Service principal '{service_principal}' not found.")
+    service_record = get_principal(db_cursor, requested_service)
+    if service_record is None or service_record["principal_type"] != "service":
+        print(f"  [TGS] ERROR: Service principal '{requested_service}' not found.")
+        audit_event(db_cursor, "TGS", "service_lookup", client_principal,
+                    "failure", {"service": requested_service})
         return _error(KDC_ERR_S_PRINCIPAL_UNKNOWN,
-                      f"Service principal '{service_principal}' not found.")
+                      f"Service principal '{requested_service}' not found.")
 
-    service_master_key = str_to_key(service_row[0])
-
-    # ── Step 6: Generate client-service session key ──────────────
+    service_principal = service_record["principal_name"]
+    service_master_key = str_to_key(service_record["key"])
     client_service_session_key = generate_session_key()
 
-    # ── Step 7: Build Service Ticket (encrypted with service key)─
-    timestamp = time.time()
+    starttime = now
+    endtime = min(now + TICKET_LIFETIME, float(tgt.get("endtime", now + TICKET_LIFETIME)))
+    flags = _service_flags(tgt)
 
     service_ticket_plaintext = {
+        "ticket_type": "SERVICE",
+        "realm": REALM,
         "client_principal": client_principal,
+        "server_principal": service_principal,
         "service_principal": service_principal,
         "client_service_session_key": key_to_str(client_service_session_key),
-        "timestamp": timestamp,
-        "lifetime": TICKET_LIFETIME
+        "authtime": tgt.get("authtime", now),
+        "starttime": starttime,
+        "endtime": endtime,
+        "timestamp": starttime,
+        "lifetime": max(0, endtime - starttime),
+        "flags": flags,
+        "kvno": service_record["kvno"],
+        "enctype": service_record["enctype"],
     }
 
     encrypted_service_ticket = encrypt(service_ticket_plaintext, service_master_key)
 
-    # ── Step 8: Build TGS_REP (encrypted with client-TGS session key)
     tgs_rep_plaintext = {
-        "client_service_session_key": key_to_str(client_service_session_key),
+        "realm": REALM,
+        "client_principal": client_principal,
+        "server_principal": service_principal,
         "service_principal": service_principal,
-        "timestamp": timestamp,
-        "lifetime": TICKET_LIFETIME
+        "client_service_session_key": key_to_str(client_service_session_key),
+        "starttime": starttime,
+        "endtime": endtime,
+        "timestamp": starttime,
+        "lifetime": max(0, endtime - starttime),
+        "flags": flags,
+        "nonce": request_nonce,
+        "enctype": service_record["enctype"],
     }
 
     encrypted_tgs_rep = encrypt(tgs_rep_plaintext, client_tgs_session_key)
 
-    print(f"  [TGS] Service Ticket issued for '{client_principal}' → '{service_principal}'")
+    audit_event(db_cursor, "TGS", "service_ticket_issued", client_principal,
+                "success", {"service": service_principal, "endtime": endtime})
+    print(f"  [TGS] Service Ticket issued for '{client_principal}' -> '{service_principal}'")
 
     return {
         "msg_type": TGS_REP,
+        "realm": REALM,
+        "client_principal": client_principal,
+        "service_principal": service_principal,
         "encrypted_data": encrypted_tgs_rep,
-        "service_ticket": encrypted_service_ticket
+        "service_ticket": encrypted_service_ticket,
     }
 
 
+def _ticket_expired(ticket: dict, now: float) -> bool:
+    try:
+        endtime = float(ticket.get("endtime", 0))
+    except (TypeError, ValueError):
+        return True
+    return now > endtime
+
+
+def _authenticator_timestamp(authenticator: dict) -> float | None:
+    try:
+        if "ctime" in authenticator:
+            return float(authenticator["ctime"]) + (int(authenticator.get("cusec", 0)) / 1_000_000)
+        return float(authenticator.get("timestamp", 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _service_flags(tgt: dict) -> list[str]:
+    flags = list(SERVICE_TICKET_FLAGS)
+    if "forwardable" in tgt.get("flags", []):
+        flags.append("forwardable")
+    if "renewable" in tgt.get("flags", []):
+        flags.append("renewable")
+    return list(dict.fromkeys(flags))
+
+
 def _error(code: str, message: str) -> dict:
-    """Build an error response dictionary."""
     return {
-        "msg_type": "KRB_ERROR",
+        "msg_type": ERROR,
         "error_code": code,
-        "error_message": message
+        "error_message": message,
     }

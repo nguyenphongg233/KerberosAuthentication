@@ -1,34 +1,33 @@
-"""
-network.py - TCP Socket utilities for JSON data exchange.
-
-Implements length-prefixed framing over TCP sockets to reliably
-send and receive JSON-serialized messages between Kerberos components.
+"""TCP framing utilities for Kerberos demo messages.
 
 Frame format:
-    [4 bytes: message length (big-endian)] + [N bytes: JSON payload]
+    [4 bytes: message length (big-endian)] + [N bytes: DER or JSON payload]
 """
 
 import json
 import struct
 import socket
 
+from core.asn1_codec import decode_message, encode_message
+from core.messages import WIRE_FORMAT
+
 
 def send_message(sock: socket.socket, data: dict) -> None:
     """
-    Send a JSON message over a TCP socket with length-prefixed framing.
+    Send a Kerberos message over a TCP socket with length-prefixed framing.
 
     Args:
         sock: The connected TCP socket.
         data: Dictionary to serialize and send.
     """
-    payload = json.dumps(data).encode('utf-8')
+    payload = _serialize(data)
     length_prefix = struct.pack('>I', len(payload))
     sock.sendall(length_prefix + payload)
 
 
 def receive_message(sock: socket.socket) -> dict:
     """
-    Receive a length-prefixed JSON message from a TCP socket.
+    Receive a length-prefixed Kerberos message from a TCP socket.
 
     Args:
         sock: The connected TCP socket.
@@ -51,7 +50,23 @@ def receive_message(sock: socket.socket) -> dict:
     if not raw_payload:
         raise ConnectionError("Connection closed while reading message payload.")
 
-    return json.loads(raw_payload.decode('utf-8'))
+    return _deserialize(raw_payload)
+
+
+def _serialize(data: dict) -> bytes:
+    if WIRE_FORMAT == "der":
+        return encode_message(data)
+    if WIRE_FORMAT == "json":
+        return json.dumps(data).encode("utf-8")
+    raise ValueError(f"Unsupported KRB_WIRE_FORMAT: {WIRE_FORMAT}")
+
+
+def _deserialize(payload: bytes) -> dict:
+    if WIRE_FORMAT == "der":
+        return decode_message(payload)
+    if WIRE_FORMAT == "json":
+        return json.loads(payload.decode("utf-8"))
+    raise ValueError(f"Unsupported KRB_WIRE_FORMAT: {WIRE_FORMAT}")
 
 
 def _recv_exact(sock: socket.socket, num_bytes: int) -> bytes:

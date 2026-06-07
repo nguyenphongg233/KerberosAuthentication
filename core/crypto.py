@@ -1,9 +1,9 @@
 """
-crypto.py - AES-128 encryption/decryption wrappers for Kerberos V5.
+crypto.py - Encryption and key-derivation helpers for the Kerberos demo.
 
-Uses the Fernet module (AES-128-CBC with HMAC-SHA256) from the
-`cryptography` library. Key derivation uses SHA-256 to convert
-passwords into Fernet-compatible 32-byte URL-safe base64 keys.
+The project still uses Fernet for readability, but long-term keys are now
+derived with PBKDF2-HMAC-SHA256 and a per-principal salt. This is closer to
+Kerberos string-to-key semantics than hashing the password directly.
 """
 
 import base64
@@ -14,27 +14,39 @@ import os
 from cryptography.fernet import Fernet, InvalidToken
 
 
-def derive_key(password: str) -> bytes:
+DEFAULT_KDF_ITERATIONS = 200_000
+ENCTYPE = "fernet-aes128-hmac-sha256-pbkdf2"
+
+
+def derive_key(password: str, salt: str | bytes | None = None,
+               iterations: int = DEFAULT_KDF_ITERATIONS) -> bytes:
     """
     Derive a Fernet-compatible encryption key from a plaintext password.
 
-    Process:
-        1. Hash the password using SHA-256 (produces 32 bytes).
-        2. Truncate to 16 bytes (AES-128).
-        3. Encode as URL-safe base64 (32 bytes) for Fernet compatibility.
-
     Args:
         password: The plaintext password string.
+        salt: Per-principal salt. If omitted, a deterministic demo salt is used
+            for backward compatibility with older call sites.
+        iterations: PBKDF2 iteration count.
 
     Returns:
         A 32-byte URL-safe base64-encoded key suitable for Fernet.
     """
-    sha256_hash = hashlib.sha256(password.encode('utf-8')).digest()
-    # Truncate to 16 bytes for AES-128
-    aes_key = sha256_hash[:16]
-    # Fernet requires a 32-byte URL-safe base64-encoded key
-    fernet_key = base64.urlsafe_b64encode(aes_key + aes_key)
-    return fernet_key
+    if salt is None:
+        salt_bytes = b"KERBEROS_DEMO_DEFAULT_SALT"
+    elif isinstance(salt, bytes):
+        salt_bytes = salt
+    else:
+        salt_bytes = salt.encode("utf-8")
+
+    raw_key = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt_bytes,
+        iterations,
+        dklen=32,
+    )
+    return base64.urlsafe_b64encode(raw_key)
 
 
 def generate_session_key() -> bytes:
@@ -44,8 +56,8 @@ def generate_session_key() -> bytes:
     Returns:
         A 32-byte URL-safe base64-encoded key.
     """
-    random_bytes = os.urandom(16)
-    fernet_key = base64.urlsafe_b64encode(random_bytes + random_bytes)
+    random_bytes = os.urandom(32)
+    fernet_key = base64.urlsafe_b64encode(random_bytes)
     return fernet_key
 
 

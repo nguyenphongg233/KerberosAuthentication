@@ -1,309 +1,281 @@
-"""
-client_app.py - User CLI to initiate Kerberos authentication.
+"""Command-line Kerberos demo client."""
 
-Orchestrates the full 3-phase Kerberos authentication flow:
-    Phase 1: AS Exchange  → Obtain TGT
-    Phase 2: TGS Exchange → Obtain Service Ticket
-    Phase 3: AP Exchange  → Access the Application Server
-
-Usage:
-    python -m client.client_app
-"""
-
-import socket
-import time
-import sys
 import os
+import secrets
+import socket
+import sys
 
-# Add project root to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from cryptography.fernet import InvalidToken
 
-from core.crypto import derive_key, encrypt, decrypt, key_to_str, str_to_key
-from core.network import send_message, receive_message
-from core.messages import (
-    AS_REQ, AS_REP, TGS_REQ, TGS_REP, AP_REQ, AP_REP, ERROR,
-    KDC_HOST, KDC_PORT, APP_SERVER_HOST, APP_SERVER_PORT, TGS_PRINCIPAL
-)
 from client.credential_cache import CredentialCache
+from core.crypto import derive_key, decrypt, encrypt, str_to_key
+from core.messages import (
+    AP_REP,
+    AP_REQ,
+    APP_SERVER_HOST,
+    APP_SERVER_PORT,
+    AS_REP,
+    AS_REQ,
+    ERROR,
+    KDC_HOST,
+    KDC_PORT,
+    REALM,
+    TGS_REP,
+    TGS_REQ,
+    APP_SERVICE_PRINCIPAL,
+    APP_SERVICE_NAME,
+)
+from core.network import receive_message, send_message
+from core.principal import principal_salt, service_principal, user_principal
+from core.replay_cache import current_kerberos_time
 
 
-# Global credential cache
 cache = CredentialCache()
+client_principal_global = None
 
 
 def phase1_as_exchange(client_principal: str, password: str) -> bool:
-    """
-    Phase 1: Authentication Service (AS) Exchange.
-
-    Sends AS_REQ to the KDC and processes AS_REP to obtain a TGT.
-
-    Args:
-        client_principal: The client's username/principal.
-        password: The client's plaintext password.
-
-    Returns:
-        True if the AS exchange succeeded, False otherwise.
-    """
+    """Run AS Exchange and cache the TGT."""
     print(f"\n{'─'*50}")
-    print(f"  Phase 1: AS Exchange (Authentication)")
+    print("  Phase 1: AS Exchange (Authentication)")
     print(f"{'─'*50}")
 
-    # Derive the client's master key from the password
-    client_master_key = derive_key(password)
+    client_key = derive_key(password, salt=principal_salt(client_principal, REALM))
+    request_nonce = secrets.randbits(31)
+    timestamp, ctime, cusec = current_kerberos_time()
+    preauth_data = encrypt({
+        "client_principal": client_principal,
+        "realm": REALM,
+        "timestamp": timestamp,
+        "ctime": ctime,
+        "cusec": cusec,
+    }, client_key)
 
-    # Build AS_REQ
     as_req = {
         "msg_type": AS_REQ,
         "client_principal": client_principal,
-        "timestamp": time.time()
+        "realm": REALM,
+        "timestamp": timestamp,
+        "ctime": ctime,
+        "cusec": cusec,
+        "nonce": request_nonce,
+        "preauth": preauth_data,
     }
 
     print(f"[Client] Sending AS_REQ to KDC ({KDC_HOST}:{KDC_PORT})...")
     print(f"         Principal: {client_principal}")
 
-    try:
-        # Connect to KDC and send AS_REQ
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(10)
-        sock.connect((KDC_HOST, KDC_PORT))
-        send_message(sock, as_req)
-
-        # Receive AS_REP
-        response = receive_message(sock)
-        sock.close()
-
-    except ConnectionRefusedError:
-        print("[Client] ERROR: Cannot connect to KDC. Is the KDC server running?")
-        return False
-    except Exception as e:
-        print(f"[Client] ERROR: Network error during AS Exchange: {e}")
+    response = _send_to_kdc(as_req, "AS Exchange")
+    if response is None:
         return False
 
-    # Check for error response
     if response.get("msg_type") == ERROR:
         print(f"[Client] ERROR from KDC: {response.get('error_message')}")
         return False
-
     if response.get("msg_type") != AS_REP:
         print(f"[Client] ERROR: Unexpected response type: {response.get('msg_type')}")
         return False
 
-    # Decrypt AS_REP with client's master key
     try:
-        as_rep_data = decrypt(response["encrypted_data"], client_master_key)
+        as_rep_data = decrypt(response["encrypted_data"], client_key)
     except InvalidToken:
         print("[Client] ERROR: Failed to decrypt AS_REP. Wrong password?")
         return False
 
-    # Extract session key and TGT
+    if as_rep_data.get("nonce") != request_nonce:
+        print("[Client] ERROR: AS_REP nonce mismatch. Possible replayed response.")
+        return False
+
     client_tgs_session_key = str_to_key(as_rep_data["client_tgs_session_key"])
-    tgt = response["tgt"]
+    cache.store_tgt(response["tgt"], client_tgs_session_key, as_rep_data)
 
-    # Store in credential cache
-    cache.store_tgt(tgt, client_tgs_session_key)
-
-    print(f"[Client] ✓ AS Exchange successful!")
-    print(f"         TGT received and cached.")
-    print(f"         Session key established with TGS.")
-    print(f"         Ticket lifetime: {as_rep_data['lifetime']}s")
-
+    print("[Client] ✓ AS Exchange successful!")
+    print("         TGT received and cached.")
+    print("         Session key established with TGS.")
+    print(f"         Ticket endtime: {as_rep_data.get('endtime')}")
+    print(f"         Flags: {', '.join(as_rep_data.get('flags', []))}")
     return True
 
 
-def phase2_tgs_exchange(service_principal: str) -> bool:
-    """
-    Phase 2: Ticket-Granting Service (TGS) Exchange.
-
-    Sends TGS_REQ with TGT + Authenticator to obtain a Service Ticket.
-
-    Args:
-        service_principal: The target service to access.
-
-    Returns:
-        True if the TGS exchange succeeded, False otherwise.
-    """
+def phase2_tgs_exchange(service_name: str) -> bool:
+    """Run TGS Exchange and cache the service ticket."""
     print(f"\n{'─'*50}")
-    print(f"  Phase 2: TGS Exchange (Service Ticket)")
+    print("  Phase 2: TGS Exchange (Service Ticket)")
     print(f"{'─'*50}")
 
-    # Retrieve cached TGT and session key
     tgt, client_tgs_session_key = cache.get_tgt()
-
     if tgt is None:
-        print("[Client] ERROR: No TGT in cache. Run Phase 1 first.")
+        print("[Client] ERROR: No valid TGT in cache. Run Phase 1 first.")
         return False
 
-    # Build Authenticator (encrypted with client-TGS session key)
-    authenticator_plaintext = {
+    requested_service = service_principal(service_name)
+    timestamp, ctime, cusec = current_kerberos_time()
+    authenticator = encrypt({
         "client_principal": client_principal_global,
-        "timestamp": time.time()
-    }
-    encrypted_authenticator = encrypt(authenticator_plaintext, client_tgs_session_key)
+        "realm": REALM,
+        "timestamp": timestamp,
+        "ctime": ctime,
+        "cusec": cusec,
+    }, client_tgs_session_key)
 
-    # Build TGS_REQ
+    request_nonce = secrets.randbits(31)
     tgs_req = {
         "msg_type": TGS_REQ,
-        "service_principal": service_principal,
+        "realm": REALM,
+        "service_principal": requested_service,
         "tgt": tgt,
-        "authenticator": encrypted_authenticator
+        "authenticator": authenticator,
+        "nonce": request_nonce,
     }
 
     print(f"[Client] Sending TGS_REQ to KDC ({KDC_HOST}:{KDC_PORT})...")
-    print(f"         Requested service: {service_principal}")
+    print(f"         Requested service: {requested_service}")
 
-    try:
-        # Connect to KDC and send TGS_REQ
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(10)
-        sock.connect((KDC_HOST, KDC_PORT))
-        send_message(sock, tgs_req)
-
-        # Receive TGS_REP
-        response = receive_message(sock)
-        sock.close()
-
-    except ConnectionRefusedError:
-        print("[Client] ERROR: Cannot connect to KDC. Is the KDC server running?")
-        return False
-    except Exception as e:
-        print(f"[Client] ERROR: Network error during TGS Exchange: {e}")
+    response = _send_to_kdc(tgs_req, "TGS Exchange")
+    if response is None:
         return False
 
-    # Check for error response
     if response.get("msg_type") == ERROR:
         print(f"[Client] ERROR from KDC: {response.get('error_message')}")
         return False
-
     if response.get("msg_type") != TGS_REP:
         print(f"[Client] ERROR: Unexpected response type: {response.get('msg_type')}")
         return False
 
-    # Decrypt TGS_REP with client-TGS session key
     try:
         tgs_rep_data = decrypt(response["encrypted_data"], client_tgs_session_key)
     except InvalidToken:
         print("[Client] ERROR: Failed to decrypt TGS_REP.")
         return False
 
-    # Extract service session key and service ticket
+    if tgs_rep_data.get("nonce") != request_nonce:
+        print("[Client] ERROR: TGS_REP nonce mismatch. Possible replayed response.")
+        return False
+
     client_service_session_key = str_to_key(tgs_rep_data["client_service_session_key"])
     service_ticket = response["service_ticket"]
+    service_princ = tgs_rep_data["service_principal"]
+    cache.store_service_ticket(
+        service_princ,
+        service_ticket,
+        client_service_session_key,
+        tgs_rep_data,
+    )
 
-    # Store in credential cache
-    cache.store_service_ticket(service_principal, service_ticket, client_service_session_key)
-
-    print(f"[Client] ✓ TGS Exchange successful!")
-    print(f"         Service Ticket received for '{service_principal}'.")
-    print(f"         Session key established with service.")
-    print(f"         Ticket lifetime: {tgs_rep_data['lifetime']}s")
-
+    print("[Client] ✓ TGS Exchange successful!")
+    print(f"         Service Ticket received for '{service_princ}'.")
+    print("         Session key established with service.")
+    print(f"         Ticket endtime: {tgs_rep_data.get('endtime')}")
+    print(f"         Flags: {', '.join(tgs_rep_data.get('flags', []))}")
     return True
 
 
-def phase3_ap_exchange(service_principal: str) -> bool:
-    """
-    Phase 3: Application Service (AP) Exchange.
-
-    Sends AP_REQ with Service Ticket + Authenticator to the Application Server.
-    Verifies mutual authentication via AP_REP.
-
-    Args:
-        service_principal: The target service to access.
-
-    Returns:
-        True if the AP exchange succeeded, False otherwise.
-    """
+def phase3_ap_exchange(service_name: str) -> bool:
+    """Run AP Exchange and verify mutual authentication."""
     print(f"\n{'─'*50}")
-    print(f"  Phase 3: AP Exchange (Service Access)")
+    print("  Phase 3: AP Exchange (Service Access)")
     print(f"{'─'*50}")
 
-    # Retrieve cached service ticket and session key
-    service_ticket, client_service_session_key = cache.get_service_ticket(service_principal)
-
+    service_princ = service_principal(service_name)
+    service_ticket, client_service_session_key = cache.get_service_ticket(service_princ)
     if service_ticket is None:
-        print("[Client] ERROR: No service ticket in cache. Run Phase 2 first.")
+        print("[Client] ERROR: No valid service ticket in cache. Run Phase 2 first.")
         return False
 
-    # Build Authenticator (encrypted with client-service session key)
-    current_time = time.time()
-    authenticator_plaintext = {
+    timestamp, ctime, cusec = current_kerberos_time()
+    authenticator = encrypt({
         "client_principal": client_principal_global,
-        "timestamp": current_time
-    }
-    encrypted_authenticator = encrypt(authenticator_plaintext, client_service_session_key)
+        "realm": REALM,
+        "timestamp": timestamp,
+        "ctime": ctime,
+        "cusec": cusec,
+    }, client_service_session_key)
 
-    # Build AP_REQ
     ap_req = {
         "msg_type": AP_REQ,
+        "service_principal": service_princ,
         "service_ticket": service_ticket,
-        "authenticator": encrypted_authenticator
+        "authenticator": authenticator,
     }
 
     print(f"[Client] Sending AP_REQ to Application Server ({APP_SERVER_HOST}:{APP_SERVER_PORT})...")
-
-    try:
-        # Connect to Application Server and send AP_REQ
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(10)
-        sock.connect((APP_SERVER_HOST, APP_SERVER_PORT))
-        send_message(sock, ap_req)
-
-        # Receive AP_REP
-        response = receive_message(sock)
-        sock.close()
-
-    except ConnectionRefusedError:
-        print("[Client] ERROR: Cannot connect to Application Server. Is it running?")
-        return False
-    except Exception as e:
-        print(f"[Client] ERROR: Network error during AP Exchange: {e}")
+    response = _send_to_app_server(ap_req)
+    if response is None:
         return False
 
-    # Check for error response
     if response.get("msg_type") == ERROR:
         print(f"[Client] ERROR from Server: {response.get('error_message')}")
         return False
-
     if response.get("msg_type") != AP_REP:
         print(f"[Client] ERROR: Unexpected response type: {response.get('msg_type')}")
         return False
 
-    # Decrypt AP_REP for mutual authentication
     try:
         ap_rep_data = decrypt(response["encrypted_data"], client_service_session_key)
     except InvalidToken:
         print("[Client] ERROR: Failed to decrypt AP_REP. Mutual authentication failed!")
         return False
 
-    # Verify mutual authentication: server should return timestamp + 1
-    server_timestamp = ap_rep_data.get("timestamp")
-    expected_timestamp = current_time + 1
+    try:
+        server_timestamp = float(ap_rep_data.get("timestamp"))
+    except (TypeError, ValueError):
+        print("[Client] ERROR: Missing or invalid timestamp in AP_REP.")
+        return False
 
+    expected_timestamp = timestamp + 1
     if abs(server_timestamp - expected_timestamp) < 0.01:
-        print(f"[Client] ✓ Mutual authentication verified!")
+        print("[Client] ✓ Mutual authentication verified!")
     else:
-        print(f"[Client] WARNING: Timestamp mismatch in mutual authentication.")
+        print("[Client] ERROR: Timestamp mismatch in mutual authentication.")
         print(f"         Expected: {expected_timestamp}, Got: {server_timestamp}")
+        return False
 
-    # Display the service response
-    service_data = ap_rep_data.get("service_data", "No data received.")
     print(f"\n{'='*50}")
-    print(f"  SERVICE RESPONSE")
+    print("  SERVICE RESPONSE")
     print(f"{'='*50}")
-    print(f"  {service_data}")
+    print(f"  {ap_rep_data.get('service_data', 'No data received.')}")
     print(f"{'='*50}")
-
     return True
 
 
-# ============================================================
-# Main Application
-# ============================================================
+def _send_to_kdc(message: dict, phase_name: str) -> dict | None:
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        sock.connect((KDC_HOST, KDC_PORT))
+        send_message(sock, message)
+        response = receive_message(sock)
+        sock.close()
+        return response
+    except ConnectionRefusedError:
+        print("[Client] ERROR: Cannot connect to KDC. Is the KDC server running?")
+        return None
+    except Exception as e:
+        print(f"[Client] ERROR: Network error during {phase_name}: {e}")
+        return None
 
-# Global variable to store the client principal name
-client_principal_global = None
+
+def _send_to_app_server(message: dict) -> dict | None:
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        sock.connect((APP_SERVER_HOST, APP_SERVER_PORT))
+        send_message(sock, message)
+        response = receive_message(sock)
+        sock.close()
+        return response
+    except ConnectionRefusedError:
+        print("[Client] ERROR: Cannot connect to Application Server. Is it running?")
+        return None
+    except Exception as e:
+        print(f"[Client] ERROR: Network error during AP Exchange: {e}")
+        return None
 
 
 def main():
@@ -311,13 +283,14 @@ def main():
     global client_principal_global
 
     print(f"\n{'='*60}")
-    print(f"  Kerberos V5 Client Application")
+    print("  Kerberos V5 Client Application")
     print(f"{'='*60}")
+    print(f"  Realm:       {REALM}")
     print(f"  KDC Server:  {KDC_HOST}:{KDC_PORT}")
     print(f"  App Server:  {APP_SERVER_HOST}:{APP_SERVER_PORT}")
+    print(f"  Service:     {APP_SERVICE_PRINCIPAL}")
     print(f"{'='*60}\n")
 
-    # ── Get user credentials ────────────────────────────────────
     username = input("Enter username: ").strip()
     if not username:
         print("Error: Username cannot be empty.")
@@ -328,28 +301,25 @@ def main():
         print("Error: Password cannot be empty.")
         return
 
-    client_principal_global = username
+    client_principal_global = user_principal(username)
 
-    # ── Phase 1: AS Exchange ────────────────────────────────────
-    if not phase1_as_exchange(username, password):
+    if not phase1_as_exchange(client_principal_global, password):
         print("\n[Client] Authentication failed. Exiting.")
         return
 
-    # ── Phase 2: TGS Exchange ───────────────────────────────────
-    service_name = "fileserver"
-    print(f"\n[Client] Requesting access to service: '{service_name}'")
+    service_name = APP_SERVICE_NAME
+    print(f"\n[Client] Requesting access to service: '{service_principal(service_name)}'")
 
     if not phase2_tgs_exchange(service_name):
         print("\n[Client] Failed to obtain service ticket. Exiting.")
         return
 
-    # ── Phase 3: AP Exchange ────────────────────────────────────
     if not phase3_ap_exchange(service_name):
         print("\n[Client] Failed to access the service. Exiting.")
         return
 
-    print(f"\n[Client] ✓ Full Kerberos authentication completed successfully!")
-    print(f"[Client] All 3 phases completed. Session established.\n")
+    print("\n[Client] ✓ Full Kerberos authentication completed successfully!")
+    print("[Client] All 3 phases completed. Session established.\n")
 
 
 if __name__ == "__main__":

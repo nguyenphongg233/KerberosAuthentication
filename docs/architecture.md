@@ -1,0 +1,280 @@
+# Kiến Trúc Hệ Thống
+
+Tài liệu này mô tả kiến trúc hiện tại của KerberosAuthentication sau khi nâng cấp theo hướng mô phỏng sát RFC 4120 ở mức cấu trúc và hành vi.
+
+## Phạm Vi Chuẩn Hóa
+
+Project mô phỏng các khái niệm Kerberos V5 chính:
+
+- Realm.
+- Principal chuẩn kiểu `name@REALM` và `service/host@REALM`.
+- AS, TGS và AP Exchange.
+- TGT và service ticket.
+- Session key riêng cho từng quan hệ.
+- Ticket flags, authtime, starttime, endtime, renew_till.
+- Key version number (`kvno`) và encryption type mô tả.
+- Keytab cho service.
+- Credential cache cho client.
+- Replay cache và audit log.
+- ASN.1/DER outer wire format cho các message chính trong AS/TGS/AP.
+
+Project chưa mô phỏng Kerberos encryption types thật. `EncryptedData.cipher` đang chứa Fernet token của demo.
+
+## Sơ Đồ Tổng Quan
+
+```text
+Client CLI
+  | AS_REQ / AS_REP
+  v
+KDC Server
+  |-- Authentication Server Handler
+  |-- Ticket Granting Server Handler
+  |-- Principal DB / Audit Log / Replay Cache
+  |
+  | TGS_REQ / TGS_REP
+  v
+Client Credential Cache
+  |
+  | AP_REQ / AP_REP
+  v
+Application Server
+  |-- JSON keytab
+  |-- Replay Cache
+```
+
+## Thành Phần
+
+| Thành phần | File | Trách nhiệm |
+| --- | --- | --- |
+| Client CLI | `client/client_app.py` | Thực hiện AS/TGS/AP Exchange |
+| Credential Cache | `client/credential_cache.py` | Lưu TGT, service ticket và session key trong file JSON |
+| KDC Server | `kdc/kdc_server.py` | TCP server, dispatch request đến AS/TGS |
+| KDC Database | `kdc/database.py` | Schema, migration, principal store, alias, audit log, keytab export |
+| AS Handler | `kdc/as_handler.py` | Pre-authentication, cấp TGT |
+| TGS Handler | `kdc/tgs_handler.py` | Kiểm TGT/authenticator, cấp service ticket |
+| Application Server | `app_server/service_server.py` | Đọc keytab, xử lý AP_REQ, trả AP_REP |
+| Crypto | `core/crypto.py` | PBKDF2, Fernet encrypt/decrypt, session key |
+| Principal | `core/principal.py` | Chuẩn hóa realm/principal |
+| Keytab | `core/keytab.py` | Đọc/ghi keytab JSON |
+| Replay Cache | `core/replay_cache.py` | Replay cache SQLite |
+| ASN.1/DER Codec | `core/asn1_codec.py` | Encode/decode message Kerberos theo subset RFC 4120 |
+| Network | `core/network.py` | TCP length-prefixed DER mặc định, JSON fallback khi debug |
+| Constants | `core/messages.py` | Message type, error code, config |
+
+## Principal Model
+
+Realm mặc định:
+
+```text
+DEMO.LOCAL
+```
+
+Principal mặc định:
+
+```text
+alice@DEMO.LOCAL
+bob@DEMO.LOCAL
+krbtgt/DEMO.LOCAL@DEMO.LOCAL
+fileserver/localhost@DEMO.LOCAL
+```
+
+Client có thể nhập alias `alice`; `core.principal.user_principal` sẽ chuẩn hóa thành `alice@DEMO.LOCAL`.
+
+Service alias `fileserver` sẽ được chuẩn hóa thành `fileserver/localhost@DEMO.LOCAL`.
+
+## Database Model
+
+Database chính mặc định:
+
+```text
+kdc/database.db
+```
+
+Các bảng chính:
+
+| Bảng | Vai trò |
+| --- | --- |
+| `principals` | Lưu principal, salt, key, kvno, enctype, kdf, trạng thái |
+| `principal_aliases` | Map alias ngắn sang principal chuẩn |
+| `audit_log` | Ghi sự kiện AS/TGS/KDC |
+| `replay_cache` | Lưu authenticator fingerprint đã sử dụng |
+
+Schema `principals` lưu:
+
+- `principal_name`
+- `principal_type`
+- `realm`
+- `salt`
+- `key`
+- `kvno`
+- `enctype`
+- `kdf`
+- `iterations`
+- `created_at`
+- `updated_at`
+- `disabled`
+
+## Key Model
+
+Long-term key được dẫn xuất bằng:
+
+```text
+PBKDF2-HMAC-SHA256(password, principal_salt, 200000 iterations)
+```
+
+Salt demo:
+
+```text
+REALM:principal
+```
+
+Ví dụ:
+
+```text
+DEMO.LOCAL:alice@DEMO.LOCAL
+```
+
+Session key được sinh ngẫu nhiên bằng `os.urandom(32)` và encode thành Fernet key.
+
+## Nơi Lưu Trữ Khóa
+
+Các khóa trong project được lưu và sử dụng như sau:
+
+| Loại khóa / secret | Nơi lưu | Bên sử dụng | Ghi chú |
+| --- | --- | --- | --- |
+| Password demo của user | Hằng bootstrap trong `kdc/database.py` | KDC khi khởi tạo principal; client nhập lại khi chạy | Password không được gửi qua network. Trong demo password mặc định là dữ liệu bootstrap, chưa phải secret manager. |
+| Long-term client key `Kc` | SQLite `kdc/database.db`, bảng `principals`, cột `key` | AS dùng để kiểm pre-authentication | Client tự derive `Kc` từ password và salt khi chạy, không lưu `Kc` lâu dài. |
+| Long-term TGS key `Ktgs` | SQLite `kdc/database.db`, bảng `principals`, principal `krbtgt/DEMO.LOCAL@DEMO.LOCAL` | AS mã hóa TGT; TGS giải mã TGT | Key này chỉ nằm trong KDC DB, không export ra keytab service. |
+| Long-term service key `Kservice` | SQLite `kdc/database.db` và keytab JSON `app_server/<APP_SERVICE_NAME>.keytab.json` | TGS mã hóa service ticket; Application Server giải mã service ticket | KDC export keytab khi start; Application Server đọc keytab khi start. |
+| Client-TGS session key `Kc_tgs` | Trong TGT đã mã hóa bằng `Ktgs`; trong AS-REP client part đã mã hóa bằng `Kc`; sau đó nằm trong `client/krb5cc_demo.json` | Client và TGS | Do AS sinh ngẫu nhiên cho từng phiên TGT. |
+| Client-Service session key `Kc_service` | Trong service ticket đã mã hóa bằng `Kservice`; trong TGS-REP client part đã mã hóa bằng `Kc_tgs`; sau đó nằm trong `client/krb5cc_demo.json` | Client và Application Server | Do TGS sinh ngẫu nhiên cho từng service ticket. |
+| Ticket ciphertext | Credential cache client `client/krb5cc_demo.json` | Client lưu và gửi lại; TGS/Application Server giải mã phần ticket tương ứng | Client không cần đọc plaintext của TGT hoặc service ticket. |
+
+Replay cache và audit log không lưu khóa. Replay cache chỉ lưu fingerprint của authenticator đã dùng; audit log chỉ ghi sự kiện vận hành.
+
+## Keytab Model
+
+KDC tự xuất keytab JSON cho Application Server:
+
+```text
+app_server/<APP_SERVICE_NAME>.keytab.json
+```
+
+Keytab chứa:
+
+- `principal`
+- `realm`
+- `kvno`
+- `enctype`
+- `key`
+
+Application Server đọc keytab khi start và dùng key trong keytab để giải mã service ticket.
+
+## Credential Cache Model
+
+Client lưu cache tại:
+
+```text
+client/krb5cc_demo.json
+```
+
+Cache chứa:
+
+- TGT.
+- Client-TGS session key.
+- Metadata của TGT.
+- Service ticket theo từng service principal.
+- Client-Service session key.
+- Metadata của service ticket.
+
+Cache sẽ tự bỏ ticket nếu `endtime` đã hết hạn.
+
+## Replay Cache Model
+
+Replay cache nằm trong SQLite table `replay_cache`.
+
+TGS replay key:
+
+```text
+client_principal | service_principal | ctime | cusec
+```
+
+AP replay key:
+
+```text
+client_principal | server_principal | ctime | cusec
+```
+
+Entry cũ hơn `MAX_CLOCK_SKEW` sẽ bị xóa khi có request mới.
+
+## Threading
+
+KDC và Application Server đều tạo thread riêng cho mỗi TCP connection:
+
+```text
+accept()
+Thread(target=handle_client, daemon=True)
+```
+
+SQLite connection được mở riêng trong mỗi request KDC. Replay cache cũng mở connection ngắn hạn khi check-and-store.
+
+## Giao Thức Truyền Thông Giữa Các Thành Phần
+
+Project dùng TCP socket cho các kênh client-server. Mỗi message có frame:
+
+```text
+[4-byte big-endian length][DER payload]
+```
+
+`DER payload` là outer Kerberos message do `core/asn1_codec.py` encode/decode. `KRB_WIRE_FORMAT=der` là mặc định; `json` chỉ dùng khi debug legacy.
+
+| Kênh | Endpoint | Message | Cách bảo vệ dữ liệu |
+| --- | --- | --- | --- |
+| Client ↔ KDC/AS | `KDC_HOST:KDC_PORT` | `AS-REQ`, `AS-REP`, `KRB-ERROR` | Pre-auth mã hóa bằng `Kc`; TGT mã hóa bằng `Ktgs`; client part mã hóa bằng `Kc`. |
+| Client ↔ KDC/TGS | `KDC_HOST:KDC_PORT` | `TGS-REQ`, `TGS-REP`, `KRB-ERROR` | TGT mã hóa bằng `Ktgs`; authenticator mã hóa bằng `Kc_tgs`; service ticket mã hóa bằng `Kservice`; client part mã hóa bằng `Kc_tgs`. |
+| Client ↔ Application Server | `APP_SERVER_HOST:APP_SERVER_PORT` | `AP-REQ`, `AP-REP`, `KRB-ERROR` | Service ticket mã hóa bằng `Kservice`; authenticator và AP-REP mã hóa bằng `Kc_service`. |
+| AS ↔ TGS | Nội bộ trong cùng process `kdc.kdc_server` | Dispatch theo `msg_type` | Không có network riêng giữa AS và TGS trong demo; cả hai dùng chung KDC DB. |
+| KDC ↔ Application Server | Không có kênh TCP runtime trực tiếp | Không trao đổi request/response runtime | Quan hệ tin cậy được thiết lập bằng `Kservice`: KDC lưu trong DB và export keytab; Application Server đọc keytab. |
+
+Vì chưa có TLS/mTLS, DER chỉ là định dạng tuần tự hóa chứ không phải mã hóa kênh truyền. Tính bí mật của dữ liệu Kerberos nằm ở các payload được mã hóa bằng Fernet demo trong `EncryptedData.cipher`; metadata như IP, port, thời điểm gửi và độ dài message vẫn quan sát được.
+
+## Data Flow
+
+### AS Exchange
+
+1. Client chuẩn hóa principal.
+2. Client derive `Kc` bằng PBKDF2 với salt theo principal.
+3. Client gửi `AS-REQ` dạng DER, chứa `PA-ENC-TIMESTAMP` mô phỏng trong `padata`.
+4. AS kiểm tra principal, pre-auth, timestamp.
+5. AS cấp TGT mã hóa bằng `Ktgs`.
+6. AS trả client portion mã hóa bằng `Kc`.
+
+### TGS Exchange
+
+1. Client gửi `TGS-REQ` dạng DER, trong đó `PA-TGS-REQ` chứa `AP-REQ` với TGT và authenticator.
+2. TGS giải mã TGT bằng `Ktgs`.
+3. TGS kiểm endtime, server principal, authenticator và replay cache.
+4. TGS cấp service ticket mã hóa bằng service key.
+5. TGS trả client portion mã hóa bằng `Kc_tgs`.
+
+### AP Exchange
+
+1. Client gửi `AP-REQ` dạng DER chứa service ticket và authenticator.
+2. Application Server giải mã service ticket bằng keytab key.
+3. Server kiểm server principal, endtime, authenticator và replay cache.
+4. Server trả AP_REP mã hóa bằng `Kc_service`.
+5. Client xác minh `timestamp + 1`.
+
+## Ranh Giới Lỗi
+
+| Lỗi | Nơi phát hiện | Error |
+| --- | --- | --- |
+| Client không tồn tại | AS | `KDC_ERR_C_PRINCIPAL_UNKNOWN` |
+| Sai password/pre-auth | AS | `KDC_ERR_PREAUTH_FAILED` |
+| Request sai realm | AS/TGS | `KDC_ERR_WRONG_REALM` |
+| TGT sai key/bị sửa | TGS | `KRB_AP_ERR_MODIFIED` |
+| Ticket hết hạn | TGS/AP | `KRB_AP_ERR_TKT_EXPIRED` |
+| Clock skew quá lớn | AS/TGS/AP | `KRB_AP_ERR_SKEW` |
+| Authenticator replay | TGS/AP | `KRB_AP_ERR_REPEAT` |
+| Service không tồn tại | TGS | `KDC_ERR_S_PRINCIPAL_UNKNOWN` |
+| Ticket không dành cho service hiện tại | AP | `KRB_AP_ERR_MODIFIED` |
