@@ -1,5 +1,5 @@
 """
-as_handler.py - Authentication Server (AS) logic for the demo KDC.
+as_handler.py - Authentication Server (AS) logic for the KDC (RFC 4120 compliant).
 """
 
 import os
@@ -8,9 +8,23 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from cryptography.fernet import InvalidToken
-
-from core.crypto import decrypt, encrypt, generate_session_key, key_to_str, str_to_key
+from core.crypto import (
+    decrypt,
+    encrypt,
+    generate_session_key,
+    key_to_str,
+    str_to_key,
+    InvalidToken,
+    KEY_USAGE_AS_REQ_PA_ENC_TIMESTAMP,
+    KEY_USAGE_AS_REP_ENCPART,
+    KEY_USAGE_TICKET,
+    DEFAULT_ENCTYPE,
+)
+from core.asn1_codec import (
+    decode_pa_enc_timestamp,
+    encode_enc_ticket_part,
+    encode_enc_kdc_rep_part,
+)
 from core.messages import (
     AS_REP,
     DEFAULT_TICKET_FLAGS,
@@ -32,18 +46,20 @@ from kdc.database import audit_event, get_principal
 def handle_as_request(request: dict, db_cursor) -> dict:
     """
     Process AS_REQ and return AS_REP with a TGT.
-
-    The demo models RFC 4120 concepts with JSON/Fernet rather than ASN.1/DER:
-    cname/realm, pre-authentication, nonce, ticket flags, endtime and renew_till.
+    
+    Uses standard ASN.1/DER structures for inner encrypted parts and
+    proper cryptographic key usages.
     """
     requested_principal = request.get("client_principal")
     requested_realm = str(request.get("realm", REALM)).upper()
     request_nonce = request.get("nonce")
     encrypted_preauth = request.get("preauth")
+    preauth_enctype = request.get("preauth_enctype", DEFAULT_ENCTYPE)
 
     print(f"  [AS] Received AS_REQ from '{requested_principal}'")
 
-    if requested_realm != REALM:
+    ALLOWED_REALMS = [REALM, "PARTNER.LOCAL"]
+    if requested_realm not in ALLOWED_REALMS:
         audit_event(db_cursor, "AS", "as_req", requested_principal, "failure",
                     {"error": KDC_ERR_WRONG_REALM, "realm": requested_realm})
         return _error(KDC_ERR_WRONG_REALM,
@@ -65,30 +81,18 @@ def handle_as_request(request: dict, db_cursor) -> dict:
         audit_event(db_cursor, "AS", "preauth", client_principal, "failure",
                     {"error": "missing_preauth"})
         return _error(KDC_ERR_PREAUTH_FAILED, "Missing pre-authentication data.")
-
     try:
-        preauth = decrypt(encrypted_preauth, client_master_key)
+        preauth_der = decrypt(encrypted_preauth, client_master_key, KEY_USAGE_AS_REQ_PA_ENC_TIMESTAMP)
+        print(f"  [AS] Decrypted preauth_der: {preauth_der.hex()}")
+        preauth = decode_pa_enc_timestamp(preauth_der)
     except InvalidToken:
         print(f"  [AS] ERROR: Pre-authentication failed for '{client_principal}'.")
         audit_event(db_cursor, "AS", "preauth", client_principal, "failure",
                     {"error": "invalid_token"})
         return _error(KDC_ERR_PREAUTH_FAILED, "Pre-authentication failed.")
 
-    if preauth.get("client_principal") != client_principal:
-        print("  [AS] ERROR: Pre-authentication principal mismatch.")
-        audit_event(db_cursor, "AS", "preauth", client_principal, "failure",
-                    {"error": "principal_mismatch"})
-        return _error(KDC_ERR_PREAUTH_FAILED,
-                      "Pre-authentication principal mismatch.")
-
-    if str(preauth.get("realm", REALM)).upper() != REALM:
-        print("  [AS] ERROR: Pre-authentication realm mismatch.")
-        audit_event(db_cursor, "AS", "preauth", client_principal, "failure",
-                    {"error": "realm_mismatch"})
-        return _error(KDC_ERR_WRONG_REALM, "Pre-authentication realm mismatch.")
-
     try:
-        preauth_timestamp = float(preauth.get("timestamp", 0))
+        preauth_timestamp = float(preauth.get("ctime", 0))
     except (TypeError, ValueError):
         audit_event(db_cursor, "AS", "preauth", client_principal, "failure",
                     {"error": "invalid_timestamp"})
@@ -102,71 +106,99 @@ def handle_as_request(request: dict, db_cursor) -> dict:
         return _error(KRB_AP_ERR_SKEW,
                       "Pre-authentication clock skew too great.")
 
-    tgs_record = get_principal(db_cursor, TGS_PRINCIPAL)
+    tgs_principal_name = f"krbtgt/{requested_realm}@{requested_realm}"
+    tgs_record = get_principal(db_cursor, tgs_principal_name)
     if tgs_record is None:
-        print(f"  [AS] ERROR: TGS principal '{TGS_PRINCIPAL}' not found.")
+        print(f"  [AS] ERROR: TGS principal '{tgs_principal_name}' not found.")
         audit_event(db_cursor, "AS", "as_req", client_principal, "failure",
                     {"error": "missing_tgs_principal"})
-        return _error(KRB_ERR_GENERIC, "Internal error: TGS principal not found.")
+        return _error(KRB_ERR_GENERIC, f"Internal error: TGS principal '{tgs_principal_name}' not found.")
 
     tgs_master_key = str_to_key(tgs_record["key"])
-    client_tgs_session_key = generate_session_key()
+    
+    # Generate session key for Client-TGS
+    client_tgs_session_key = generate_session_key(preauth_enctype)
 
     authtime = now
     starttime = now
-    endtime = now + TICKET_LIFETIME
-    renew_till = now + RENEWABLE_LIFETIME
+    
+    kdc_options = request.get("kdc_options", [])
     flags = list(DEFAULT_TICKET_FLAGS)
+    if "renewable" in kdc_options:
+        if "renewable" not in flags:
+            flags.append("renewable")
+        renew_till = now + RENEWABLE_LIFETIME
+    elif "renewable" in flags:
+        renew_till = now + RENEWABLE_LIFETIME
+    else:
+        renew_till = None
 
+    endtime = now + TICKET_LIFETIME
+
+    import json
+    try:
+        groups_list = json.loads(client_record.get("groups", "[]"))
+    except Exception:
+        groups_list = []
+
+    auth_data = [
+        {
+            "ad_type": 100,
+            "ad_data": json.dumps(groups_list).encode("utf-8"),
+        }
+    ]
+
+    # 1. Build TGT Inner part (EncTicketPart) and encrypt it with TGS master key
     tgt_plaintext = {
-        "ticket_type": "TGT",
-        "realm": REALM,
+        "flags": flags,
+        "key": {
+            "keytype": preauth_enctype,
+            "keyvalue": client_tgs_session_key,
+        },
+        "realm": requested_realm,
         "client_principal": client_principal,
-        "server_principal": TGS_PRINCIPAL,
-        "tgs_principal": TGS_PRINCIPAL,
-        "client_tgs_session_key": key_to_str(client_tgs_session_key),
         "authtime": authtime,
         "starttime": starttime,
         "endtime": endtime,
         "renew_till": renew_till,
-        "timestamp": authtime,
-        "lifetime": TICKET_LIFETIME,
-        "flags": flags,
-        "kvno": tgs_record["kvno"],
-        "enctype": tgs_record["enctype"],
+        "authorization_data": auth_data,
     }
+    tgt_der = encode_enc_ticket_part(tgt_plaintext)
+    # Encrypt using KEY_USAGE_TICKET (2)
+    encrypted_tgt = encrypt(tgt_der, tgs_master_key, KEY_USAGE_TICKET)
 
-    encrypted_tgt = encrypt(tgt_plaintext, tgs_master_key)
-
+    # 2. Build AS-REP Inner part (EncASRepPart) and encrypt with client master key
     as_rep_plaintext = {
-        "realm": REALM,
-        "client_principal": client_principal,
-        "server_principal": TGS_PRINCIPAL,
-        "client_tgs_session_key": key_to_str(client_tgs_session_key),
-        "tgs_principal": TGS_PRINCIPAL,
+        "key": {
+            "keytype": preauth_enctype,
+            "keyvalue": client_tgs_session_key,
+        },
+        "nonce": request_nonce,
+        "flags": flags,
         "authtime": authtime,
         "starttime": starttime,
         "endtime": endtime,
         "renew_till": renew_till,
-        "timestamp": authtime,
-        "lifetime": TICKET_LIFETIME,
-        "flags": flags,
-        "nonce": request_nonce,
-        "enctype": tgs_record["enctype"],
+        "realm": requested_realm,
+        "service_principal": tgs_principal_name,
     }
-
-    encrypted_as_rep = encrypt(as_rep_plaintext, client_master_key)
+    as_rep_der = encode_enc_kdc_rep_part(as_rep_plaintext, AS_REP)
+    # Encrypt using KEY_USAGE_AS_REP_ENCPART (3)
+    encrypted_as_rep = encrypt(as_rep_der, client_master_key, KEY_USAGE_AS_REP_ENCPART)
 
     audit_event(db_cursor, "AS", "tgt_issued", client_principal, "success",
-                {"server": TGS_PRINCIPAL, "endtime": endtime, "flags": flags})
+                {"server": tgs_principal_name, "endtime": endtime, "flags": flags})
     print(f"  [AS] TGT issued for '{client_principal}'. Lifetime: {TICKET_LIFETIME}s")
 
     return {
         "msg_type": AS_REP,
-        "realm": REALM,
+        "realm": requested_realm,
         "client_principal": client_principal,
+        "server_principal": tgs_principal_name,
         "encrypted_data": encrypted_as_rep,
         "tgt": encrypted_tgt,
+        "ticket_enctype": preauth_enctype,
+        "enc_part_enctype": preauth_enctype,
     }
 
 

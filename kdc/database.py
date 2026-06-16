@@ -17,7 +17,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DB_PATH = os.getenv("KDC_DB_PATH", os.path.join(os.path.dirname(__file__), "database.db"))
 DEFAULT_KEYTAB_PATH = os.getenv(
     "APP_SERVER_KEYTAB",
-    os.path.join(PROJECT_ROOT, "app_server", f"{APP_SERVICE_NAME}.keytab.json"),
+    os.path.join(PROJECT_ROOT, "app_server", f"{APP_SERVICE_NAME}.keytab"),
 )
 
 
@@ -26,22 +26,52 @@ DEFAULT_PRINCIPALS = [
         "principal_name": user_principal("alice", REALM),
         "password": "alice_password",
         "principal_type": "user",
+        "groups": '["users", "admins"]',
     },
     {
         "principal_name": user_principal("bob", REALM),
         "password": "bob_password",
         "principal_type": "user",
+        "groups": '["users"]',
     },
     {
         "principal_name": TGS_PRINCIPAL,
         "password": "tgs_secret",
         "principal_type": "tgs",
+        "groups": '[]',
     },
     {
         "principal_name": APP_SERVICE_PRINCIPAL,
         "password": "fileserver_secret",
         "principal_type": "service",
         "keytab_path": DEFAULT_KEYTAB_PATH,
+        "groups": '[]',
+    },
+    # Cross-Realm / Partner Realm Principals
+    {
+        "principal_name": "charlie@PARTNER.LOCAL",
+        "password": "charlie_password",
+        "principal_type": "user",
+        "groups": '["users"]',
+    },
+    {
+        "principal_name": "fileserver/localhost@PARTNER.LOCAL",
+        "password": "partner_fileserver_secret",
+        "principal_type": "service",
+        "keytab_path": DEFAULT_KEYTAB_PATH,
+        "groups": '[]',
+    },
+    {
+        "principal_name": "krbtgt/PARTNER.LOCAL@DEMO.LOCAL",
+        "password": "cross_realm_secret_123",
+        "principal_type": "tgs",
+        "groups": '[]',
+    },
+    {
+        "principal_name": "krbtgt/PARTNER.LOCAL@PARTNER.LOCAL",
+        "password": "partner_tgs_secret",
+        "principal_type": "tgs",
+        "groups": '[]',
     },
 ]
 
@@ -66,6 +96,7 @@ def init_database() -> list[str]:
                 spec["principal_name"],
                 spec["password"],
                 spec["principal_type"],
+                groups=spec.get("groups", "[]"),
             )
             registered.append(record["principal_name"])
 
@@ -98,11 +129,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(cursor, "principals", "key", "TEXT DEFAULT ''")
     _add_column_if_missing(cursor, "principals", "kvno", "INTEGER DEFAULT 1")
     _add_column_if_missing(cursor, "principals", "enctype", "TEXT DEFAULT ''")
-    _add_column_if_missing(cursor, "principals", "kdf", "TEXT DEFAULT 'pbkdf2-hmac-sha256'")
+    _add_column_if_missing(cursor, "principals", "kdf", "TEXT DEFAULT 'pbkdf2-hmac-sha1'")
     _add_column_if_missing(cursor, "principals", "iterations", f"INTEGER DEFAULT {DEFAULT_KDF_ITERATIONS}")
     _add_column_if_missing(cursor, "principals", "created_at", "REAL DEFAULT 0")
     _add_column_if_missing(cursor, "principals", "updated_at", "REAL DEFAULT 0")
     _add_column_if_missing(cursor, "principals", "disabled", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cursor, "principals", "groups", "TEXT DEFAULT '[]'")
 
     cursor.execute(
         """
@@ -150,7 +182,7 @@ def _add_column_if_missing(cursor: sqlite3.Cursor, table: str, column: str,
 
 
 def upsert_principal(conn: sqlite3.Connection, principal_name: str, password: str,
-                     principal_type: str, kvno: int = 1) -> dict:
+                     principal_type: str, kvno: int = 1, groups: str = "[]") -> dict:
     """Insert or update a principal with a deterministic Kerberos-like salt."""
     now = time.time()
     realm = principal_realm(principal_name, REALM)
@@ -164,8 +196,8 @@ def upsert_principal(conn: sqlite3.Connection, principal_name: str, password: st
         """
         INSERT INTO principals (
             principal_name, secret_key, principal_type, realm, salt, key, kvno,
-            enctype, kdf, iterations, created_at, updated_at, disabled
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            enctype, kdf, iterations, created_at, updated_at, disabled, groups
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
         ON CONFLICT(principal_name) DO UPDATE SET
             secret_key=excluded.secret_key,
             principal_type=excluded.principal_type,
@@ -177,7 +209,8 @@ def upsert_principal(conn: sqlite3.Connection, principal_name: str, password: st
             kdf=excluded.kdf,
             iterations=excluded.iterations,
             updated_at=excluded.updated_at,
-            disabled=0
+            disabled=0,
+            groups=excluded.groups
         """,
         (
             principal_name,
@@ -188,10 +221,11 @@ def upsert_principal(conn: sqlite3.Connection, principal_name: str, password: st
             key,
             kvno,
             ENCTYPE,
-            "pbkdf2-hmac-sha256",
+            "pbkdf2-hmac-sha1",
             DEFAULT_KDF_ITERATIONS,
             created_at,
             now,
+            groups,
         ),
     )
 
@@ -240,7 +274,7 @@ def get_principal(cursor: sqlite3.Cursor, name: str,
     cursor.execute(
         """
         SELECT principal_name, principal_type, realm, salt, key, kvno, enctype,
-               kdf, iterations, created_at, updated_at, disabled
+               kdf, iterations, created_at, updated_at, disabled, groups
         FROM principals
         WHERE principal_name = ?
         """,
@@ -253,6 +287,7 @@ def get_principal(cursor: sqlite3.Cursor, name: str,
     columns = [
         "principal_name", "principal_type", "realm", "salt", "key", "kvno",
         "enctype", "kdf", "iterations", "created_at", "updated_at", "disabled",
+        "groups",
     ]
     record = dict(zip(columns, row))
     if record["disabled"]:

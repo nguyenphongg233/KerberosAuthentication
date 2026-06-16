@@ -1,60 +1,203 @@
-"""Persistent credential cache for the Kerberos demo client."""
+"""MIT Credential Cache v4 binary format support for Kerberos tickets (ccache)."""
 
 from __future__ import annotations
 
-import json
 import os
+import struct
 import time
 from pathlib import Path
-
-from core.crypto import key_to_str, str_to_key
 
 
 DEFAULT_CACHE_PATH = os.getenv(
     "KRB5CCNAME",
-    os.path.join(os.path.dirname(__file__), "krb5cc_demo.json"),
+    os.path.join(os.path.dirname(__file__), "krb5cc_demo"),
 )
 
 
-class CredentialCache:
-    """
-    Minimal file-backed credential cache.
+def _pack_principal(principal: str, default_realm: str = "DEMO.LOCAL") -> bytes:
+    """Pack a principal string into MIT ccache binary format."""
+    if '@' in principal:
+        name_part, realm_part = principal.split('@', 1)
+    else:
+        name_part = principal
+        realm_part = default_realm
 
-    This is intentionally simpler than a real Kerberos credential cache, but it
-    persists TGTs and service tickets across client process runs until ticket
-    endtime or manual cache clearing.
-    """
+    components = name_part.split('/')
+    
+    # 4 bytes: name_type (1)
+    # 4 bytes: num_components
+    # 4 bytes: realm length + realm bytes
+    # For each component: 4 bytes length + component bytes
+    data = struct.pack('>II', 1, len(components))
+    realm_bytes = realm_part.encode('utf-8')
+    data += struct.pack('>I', len(realm_bytes)) + realm_bytes
+    for c in components:
+        c_bytes = c.encode('utf-8')
+        data += struct.pack('>I', len(c_bytes)) + c_bytes
+    return data
+
+
+def _unpack_principal(data: bytes, offset: int) -> tuple[str, int]:
+    """Unpack principal from MIT ccache binary data starting at offset."""
+    name_type, num_components = struct.unpack_from('>II', data, offset)
+    offset += 8
+    
+    realm_len = struct.unpack_from('>I', data, offset)[0]
+    offset += 4
+    realm = data[offset:offset+realm_len].decode('utf-8')
+    offset += realm_len
+    
+    components = []
+    for _ in range(num_components):
+        c_len = struct.unpack_from('>I', data, offset)[0]
+        offset += 4
+        components.append(data[offset:offset+c_len].decode('utf-8'))
+        offset += c_len
+        
+    principal = '/'.join(components) + '@' + realm
+    return principal, offset
+
+
+def _pack_credential(client: str, server: str, key_bytes: bytes, enctype_int: int,
+                     times: dict, ticket: bytes) -> bytes:
+    """Pack a single credential record into MIT ccache binary format."""
+    data = _pack_principal(client)
+    data += _pack_principal(server)
+    
+    # keyblock: keytype (2 bytes) + keyvalue (4 bytes length prefix + bytes)
+    data += struct.pack('>H', enctype_int)
+    data += struct.pack('>I', len(key_bytes)) + key_bytes
+    
+    # times: authtime, starttime, endtime, renew_till (4 bytes each)
+    authtime = int(times.get("authtime") or 0)
+    starttime = int(times.get("starttime") or 0)
+    endtime = int(times.get("endtime") or 0)
+    renew_till = int(times.get("renew_till") or 0)
+    data += struct.pack('>IIII', authtime, starttime, endtime, renew_till)
+    
+    # is_skey (1 byte)
+    data += struct.pack('>B', 0)
+    
+    # ticket_flags (4 bytes)
+    data += struct.pack('>I', 0)
+    
+    # addresses: count (4 bytes, 0)
+    data += struct.pack('>I', 0)
+    
+    # authdata: count (4 bytes, 0)
+    data += struct.pack('>I', 0)
+    
+    # ticket: 4 bytes length prefix + bytes
+    data += struct.pack('>I', len(ticket)) + ticket
+    
+    # second_ticket: 4 bytes length prefix + bytes (0)
+    data += struct.pack('>I', 0)
+    
+    return data
+
+
+def _unpack_credential(data: bytes, offset: int) -> tuple[dict, int]:
+    """Unpack a single credential record from MIT ccache binary format."""
+    client, offset = _unpack_principal(data, offset)
+    server, offset = _unpack_principal(data, offset)
+    
+    keytype = struct.unpack_from('>H', data, offset)[0]
+    offset += 2
+    
+    key_len = struct.unpack_from('>I', data, offset)[0]
+    offset += 4
+    key_bytes = data[offset:offset+key_len]
+    offset += key_len
+    
+    authtime, starttime, endtime, renew_till = struct.unpack_from('>IIII', data, offset)
+    offset += 16
+    
+    is_skey = struct.unpack_from('>B', data, offset)[0]
+    offset += 1
+    
+    ticket_flags = struct.unpack_from('>I', data, offset)[0]
+    offset += 4
+    
+    # skip addresses
+    addr_count = struct.unpack_from('>I', data, offset)[0]
+    offset += 4
+    for _ in range(addr_count):
+        addr_type = struct.unpack_from('>H', data, offset)[0]
+        offset += 2
+        addr_len = struct.unpack_from('>I', data, offset)[0]
+        offset += 4 + addr_len
+        
+    # skip authdata
+    auth_count = struct.unpack_from('>I', data, offset)[0]
+    offset += 4
+    for _ in range(auth_count):
+        ad_type = struct.unpack_from('>H', data, offset)[0]
+        offset += 2
+        ad_len = struct.unpack_from('>I', data, offset)[0]
+        offset += 4 + ad_len
+        
+    # ticket
+    tkt_len = struct.unpack_from('>I', data, offset)[0]
+    offset += 4
+    ticket = data[offset:offset+tkt_len]
+    offset += tkt_len
+    
+    # skip second_ticket
+    sec_tkt_len = struct.unpack_from('>I', data, offset)[0]
+    offset += 4 + sec_tkt_len
+    
+    cred = {
+        "client": client,
+        "server": server,
+        "key": key_bytes,
+        "keytype": keytype,
+        "times": {
+            "authtime": authtime,
+            "starttime": starttime,
+            "endtime": endtime,
+            "renew_till": renew_till
+        },
+        "ticket": ticket
+    }
+    return cred, offset
+
+
+class CredentialCache:
+    """File-backed credential cache implementing standard MIT ccache v4 binary format."""
 
     def __init__(self, path: str = DEFAULT_CACHE_PATH):
         self.path = path
-        self._tgt = None
-        self._client_tgs_session_key = None
+        self._tgt = None  # bytes
+        self._client_tgs_session_key = None  # bytes
         self._tgt_metadata = {}
         self._service_tickets = {}
         self._load()
 
-    def store_tgt(self, tgt: str, client_tgs_session_key: bytes,
+    def store_tgt(self, tgt: bytes, client_tgs_session_key: bytes,
                   metadata: dict | None = None):
         self._tgt = tgt
         self._client_tgs_session_key = client_tgs_session_key
         self._tgt_metadata = metadata or {}
         self._save()
 
-    def get_tgt(self) -> tuple:
+    def get_tgt(self, allow_expired: bool = False) -> tuple:
         if self._tgt is None:
             return None, None
-        if self._expired(self._tgt_metadata):
-            self._tgt = None
-            self._client_tgs_session_key = None
-            self._tgt_metadata = {}
-            self._save()
-            return None, None
+        if allow_expired:
+            renew_till = float(self._tgt_metadata.get("renew_till", 0))
+            if renew_till and time.time() > renew_till:
+                self.clear()
+                return None, None
+        else:
+            if self._expired(self._tgt_metadata):
+                self.clear()
+                return None, None
         return self._tgt, self._client_tgs_session_key
 
     def store_service_ticket(self, service_principal: str,
-                             service_ticket: str,
-                             client_service_session_key: bytes,
-                             metadata: dict | None = None):
+                              service_ticket: bytes,
+                              client_service_session_key: bytes,
+                              metadata: dict | None = None):
         self._service_tickets[service_principal] = {
             "ticket": service_ticket,
             "session_key": client_service_session_key,
@@ -77,6 +220,13 @@ class CredentialCache:
         self._client_tgs_session_key = None
         self._tgt_metadata = {}
         self._service_tickets.clear()
+        
+        # If cache file exists, delete it or rewrite it empty
+        if os.path.exists(self.path):
+            try:
+                os.remove(self.path)
+            except OSError:
+                pass
         self._save()
 
     def has_tgt(self) -> bool:
@@ -97,47 +247,104 @@ class CredentialCache:
     def _load(self):
         if not os.path.exists(self.path):
             return
+        
         try:
-            payload = json.loads(Path(self.path).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-
-        tgt_payload = payload.get("tgt")
-        if tgt_payload:
-            self._tgt = tgt_payload.get("ticket")
-            key_text = tgt_payload.get("session_key")
-            self._client_tgs_session_key = str_to_key(key_text) if key_text else None
-            self._tgt_metadata = tgt_payload.get("metadata", {})
-
-        for service_principal, entry in payload.get("service_tickets", {}).items():
-            key_text = entry.get("session_key")
-            if key_text:
-                self._service_tickets[service_principal] = {
-                    "ticket": entry.get("ticket"),
-                    "session_key": str_to_key(key_text),
-                    "metadata": entry.get("metadata", {}),
-                }
+            with open(self.path, 'rb') as f:
+                data = f.read()
+            if len(data) < 4:
+                return
+            
+            format_version, header_len = struct.unpack_from('>HH', data, 0)
+            if format_version != 0x0504:
+                # Legacy or invalid cache format
+                return
+                
+            offset = 4 + header_len
+            
+            default_p, offset = _unpack_principal(data, offset)
+            
+            while offset < len(data):
+                cred, offset = _unpack_credential(data, offset)
+                from core.crypto import ENCTYPE_TO_NAME
+                enctype_name = ENCTYPE_TO_NAME.get(cred["keytype"], "aes256-cts-hmac-sha1-96")
+                
+                # Check if it is a TGT (server principal starts with krbtgt/)
+                if cred["server"].startswith("krbtgt/"):
+                    self._tgt = cred["ticket"]
+                    self._client_tgs_session_key = cred["key"]
+                    self._tgt_metadata = {
+                        "enctype": enctype_name,
+                        "authtime": cred["times"]["authtime"],
+                        "starttime": cred["times"]["starttime"],
+                        "endtime": cred["times"]["endtime"],
+                        "renew_till": cred["times"]["renew_till"]
+                    }
+                else:
+                    self._service_tickets[cred["server"]] = {
+                        "ticket": cred["ticket"],
+                        "session_key": cred["key"],
+                        "metadata": {
+                            "enctype": enctype_name,
+                            "authtime": cred["times"]["authtime"],
+                            "starttime": cred["times"]["starttime"],
+                            "endtime": cred["times"]["endtime"],
+                            "renew_till": cred["times"]["renew_till"]
+                        }
+                    }
+        except Exception as e:
+            # Corrupted cache -> clear and rewrite
+            print(f"[Client] Warning: Failed to load binary cache ({e}), clearing...")
+            self.clear()
 
     def _save(self):
+        # Ensure directory exists
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        service_tickets = {}
+        
+        # We pack default principal
+        # In this demo, we determine the client principal from the global state or metadata
+        try:
+            from client.client_app import client_principal_global
+            default_p = client_principal_global or "alice@DEMO.LOCAL"
+        except ImportError:
+            default_p = "alice@DEMO.LOCAL"
+            
+        # File header: format version 0x0504, header length 0
+        data = struct.pack('>HH', 0x0504, 0)
+        data += _pack_principal(default_p)
+        
+        # Save TGT if present
+        if self._tgt is not None and self._client_tgs_session_key is not None:
+            # Server principal is local TGS principal
+            from core.messages import REALM
+            from core.principal import principal_realm
+            client_realm = principal_realm(default_p, REALM)
+            tgs_princ = f"krbtgt/{client_realm}@{client_realm}"
+            
+            from core.crypto import NAME_TO_ENCTYPE
+            enctype_int = NAME_TO_ENCTYPE.get(self._tgt_metadata.get("enctype"), 18)
+            
+            data += _pack_credential(
+                default_p,
+                tgs_princ,
+                self._client_tgs_session_key,
+                enctype_int,
+                self._tgt_metadata,
+                self._tgt
+            )
+            
+        # Save service tickets
         for service_principal, entry in self._service_tickets.items():
-            service_tickets[service_principal] = {
-                "ticket": entry["ticket"],
-                "session_key": key_to_str(entry["session_key"]),
-                "metadata": entry.get("metadata", {}),
-            }
-
-        payload = {
-            "format": "kerberos-demo-ccache-v1",
-            "tgt": None,
-            "service_tickets": service_tickets,
-        }
-        if self._tgt and self._client_tgs_session_key:
-            payload["tgt"] = {
-                "ticket": self._tgt,
-                "session_key": key_to_str(self._client_tgs_session_key),
-                "metadata": self._tgt_metadata,
-            }
-
-        Path(self.path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            from core.crypto import NAME_TO_ENCTYPE
+            enctype_int = NAME_TO_ENCTYPE.get(entry["metadata"].get("enctype"), 18)
+            
+            data += _pack_credential(
+                default_p,
+                service_principal,
+                entry["session_key"],
+                enctype_int,
+                entry["metadata"],
+                entry["ticket"]
+            )
+            
+        with open(self.path, 'wb') as f:
+            f.write(data)

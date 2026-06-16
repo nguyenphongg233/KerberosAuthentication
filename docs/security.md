@@ -1,6 +1,6 @@
 # Ghi Chú Bảo Mật
 
-Tài liệu này mô tả mô hình bảo mật của project KerberosAuthentication, các cơ chế đã triển khai, phạm vi mô phỏng so với Kerberos V5 và các rủi ro còn lại. Project dùng RFC 4120 làm cơ sở khái niệm và đã dùng ASN.1/DER cho outer wire message, nhưng chưa tương thích Kerberos production vì `EncryptedData.cipher` vẫn chứa Fernet token demo thay vì Kerberos enctype/checksum/key usage chuẩn.
+Tài liệu này mô tả mô hình bảo mật của project KerberosAuthentication, các cơ chế đã triển khai, phạm vi mô phỏng so với Kerberos V5 và các rủi ro còn lại. Project sử dụng RFC 4120, RFC 3961, và RFC 3962 làm cơ sở thiết kế. Cả message ngoài (outer wire messages) và các cấu trúc mã hóa bên trong (inner encrypted payloads) đều tuân theo chuẩn ASN.1/DER (sử dụng `pyasn1`). Dữ liệu được mã hóa bằng thuật toán đối xứng AES-CTS kết hợp mã xác thực HMAC-SHA1-96 (enctype `aes256-cts-hmac-sha1-96` và `aes128-cts-hmac-sha1-96`) cùng với cơ chế Key Usage dẫn xuất khóa chuẩn.
 
 ## Mục Tiêu Bảo Mật
 
@@ -21,9 +21,9 @@ Project hướng tới các mục tiêu sau:
 | Tài sản | Cơ chế bảo vệ |
 | --- | --- |
 | User password | Không truyền qua network; chỉ dùng local để dẫn xuất long-term key |
-| Long-term client key | Dẫn xuất bằng PBKDF2-HMAC-SHA256 với salt theo principal |
+| Long-term client key | Dẫn xuất bằng PBKDF2-HMAC-SHA1 với salt `REALMusername` và derive-random (DK) theo chuẩn RFC 3962 |
 | TGS key | Lưu trong KDC DB, dùng để mã hóa TGT |
-| Service key | Lưu trong KDC DB và export ra keytab JSON cho Application Server |
+| Service key | Lưu trong KDC DB và export ra keytab nhị phân chuẩn MIT Keytab v2 cho Application Server |
 | Client-TGS session key | Mã hóa trong AS_REP bằng client key; nằm trong TGT mã hóa bằng TGS key |
 | Client-Service session key | Mã hóa trong TGS_REP bằng client-TGS key; nằm trong service ticket mã hóa bằng service key |
 | TGT | Mã hóa bằng TGS key |
@@ -40,14 +40,14 @@ Bảng dưới đây là bản đồ lưu trữ khóa của project:
 | Loại khóa / secret | Vị trí lưu | Rủi ro chính | Cách xử lý hiện tại |
 | --- | --- | --- | --- |
 | Password demo của `alice`, `bob`, TGS và service | Hằng bootstrap trong `kdc/database.py` | Lộ secret nếu dùng nguyên mẫu này cho môi trường thật | Chỉ dùng cho demo; password không gửi qua network. |
-| Long-term client key `Kc` | SQLite `kdc/database.db`, bảng `principals`, cột `key`; client chỉ derive tạm thời từ password khi chạy | Nếu KDC DB bị lộ, attacker có thể thử giả mạo principal hoặc brute force password yếu | PBKDF2-HMAC-SHA256 với salt theo principal và 200.000 iterations. |
+| Long-term client key `Kc` | SQLite `kdc/database.db`, bảng `principals`, cột `key`; client chỉ derive tạm thời từ password khi chạy | Nếu KDC DB bị lộ, attacker có thể thử giả mạo principal hoặc brute force password yếu | PBKDF2-HMAC-SHA1 với salt `REALMusername` (ví dụ `DEMO.LOCALalice`) và hằng "kerberos" để derive-random chuẩn RFC 3962. |
 | Long-term TGS key `Ktgs` | SQLite `kdc/database.db`, principal `krbtgt/DEMO.LOCAL@DEMO.LOCAL` | Nếu lộ `Ktgs`, attacker có thể forge hoặc decrypt TGT trong demo | Không export ra keytab; chỉ KDC dùng. |
-| Long-term service key `Kservice` | SQLite `kdc/database.db` và keytab JSON `app_server/<APP_SERVICE_NAME>.keytab.json` | Nếu keytab bị lộ, attacker có thể decrypt service ticket hoặc giả lập service | Application Server đọc keytab thay vì hard-code key trong code. |
-| Session key `Kc_tgs` | Trong TGT, trong encrypted client part của AS-REP, và trong credential cache `client/krb5cc_demo.json` | Nếu credential cache bị lộ, attacker có thể dùng TGT còn hạn | Ticket có lifetime; cache bỏ entry hết hạn. |
-| Session key `Kc_service` | Trong service ticket, trong encrypted client part của TGS-REP, và trong credential cache `client/krb5cc_demo.json` | Nếu credential cache bị lộ, attacker có thể truy cập service trong thời hạn ticket | Ticket có lifetime; Application Server kiểm replay và endtime. |
+| Long-term service key `Kservice` | SQLite `kdc/database.db` và keytab nhị phân `app_server/<APP_SERVICE_NAME>.keytab` | Nếu keytab bị lộ, attacker có thể decrypt service ticket hoặc giả lập service | Application Server đọc keytab nhị phân thay vì hard-code key trong code. |
+| Session key `Kc_tgs` | Trong TGT, trong encrypted client part của AS-REP, và trong credential cache nhị phân `client/krb5cc_demo` | Nếu credential cache bị lộ, attacker có thể dùng TGT còn hạn | Ticket có lifetime; cache bỏ entry hết hạn. |
+| Session key `Kc_service` | Trong service ticket, trong encrypted client part của TGS-REP, và trong credential cache nhị phân `client/krb5cc_demo` | Nếu credential cache bị lộ, attacker có thể truy cập service trong thời hạn ticket | Ticket có lifetime; Application Server kiểm replay và endtime. |
 | Replay state | SQLite table `replay_cache` | Không phải secret, nhưng mất cache có thể giảm khả năng phát hiện replay sau restart | Dùng SQLite persistent cache thay vì memory-only cache. |
 
-Các file quan trọng cần bảo vệ khi chạy demo là `kdc/database.db`, `app_server/<APP_SERVICE_NAME>.keytab.json` và `client/krb5cc_demo.json`. Đây là các runtime artifact, không nên commit lên repository và nên đặt quyền file chặt nếu chạy ngoài môi trường học tập.
+Các file quan trọng cần bảo vệ khi chạy demo là `kdc/database.db`, `app_server/<APP_SERVICE_NAME>.keytab` và `client/krb5cc_demo`. Đây là các runtime artifact, không nên commit lên repository và nên đặt quyền file chặt nếu chạy ngoài môi trường học tập.
 
 ## Pre-Authentication
 
@@ -78,19 +78,18 @@ Cơ chế này giúp sai password bị từ chối ngay ở AS và tránh việc
 Long-term key được dẫn xuất trong `core/crypto.py`:
 
 ```text
-PBKDF2-HMAC-SHA256(password, salt, 200000 iterations, dklen=32)
-```
+PBKDF2-HMAC-SHA1(password, salt, 1000 iterations) -> rồi dẫn xuất thông qua derive-random (DK) với hằng "kerberos" theo chuẩn RFC 3962.
 
-Salt demo được tạo theo principal:
+Salt chuẩn Kerberos V5 được tạo theo principal dạng:
 
 ```text
-REALM:principal
+REALMusername
 ```
 
 Ví dụ:
 
 ```text
-DEMO.LOCAL:alice@DEMO.LOCAL
+DEMO.LOCALalice
 ```
 
 Điểm đã cải thiện:
@@ -123,7 +122,7 @@ Service ticket chứa:
 - `authtime`, `starttime`, `endtime`.
 - `flags`, `kvno`, `enctype`.
 
-KDC sinh session key bằng `os.urandom(32)` và encode thành Fernet-compatible key. Session key có phạm vi ngắn hạn và được lưu trong credential cache của client cho tới khi ticket hết hạn.
+KDC sinh session key bằng `os.urandom(16)` (AES-128) hoặc `os.urandom(32)` (AES-256) theo enctype chuẩn. Session key có phạm vi ngắn hạn và được lưu trong credential cache của client cho tới khi ticket hết hạn.
 
 ## Replay Protection
 
@@ -182,54 +181,49 @@ Cơ chế này chứng minh server đã decrypt được service ticket, lấy �
 
 ### Keytab
 
-KDC export keytab JSON:
+KDC xuất file keytab nhị phân theo chuẩn **MIT Keytab v2**:
 
 ```text
-app_server/<APP_SERVICE_NAME>.keytab.json
+app_server/<APP_SERVICE_NAME>.keytab (mặc định: app_server/fileserver.keytab)
 ```
 
-Application Server đọc keytab khi start để lấy service key. Code không còn hard-code `SERVICE_PASSWORD` trong `service_server.py`.
+Application Server tự động đọc keytab nhị phân này khi khởi chạy để nạp động các service key. Dự án không lưu password hay key cứng trong mã nguồn.
 
 Giới hạn:
-
-- Keytab là JSON demo, không phải keytab binary chuẩn.
-- Key trong keytab chưa được bảo vệ bằng OS key store hoặc secret manager.
-- Code chưa tự set file permission chặt cho keytab.
+- Key trong keytab chưa được bảo vệ bằng OS key store hoặc secret manager bảo mật mức hệ thống.
+- Code chưa tự set file permission chặt cho keytab (cần thực hiện thủ công bằng OS permission).
 
 ### Credential Cache
 
-Client lưu credential cache JSON:
+Client lưu trữ vé và session key trong credential cache nhị phân theo chuẩn **MIT ccache v4**:
 
 ```text
-client/krb5cc_demo.json
+client/krb5cc_demo (hoặc client/krb5cc_partner tùy thuộc realm)
 ```
 
-Cache chứa TGT, service ticket, session key và metadata. Ticket hết hạn sẽ bị bỏ khi client đọc cache.
+Cache chứa thông tin default principal, danh sách các credential (TGT, Service Ticket, session keys, flags và timestamps). Vé hết hạn sẽ tự động bị loại bỏ hoặc làm mới khi client đọc cache.
 
 Giới hạn:
-
-- Cache là JSON demo, không phải ccache chuẩn của MIT Kerberos.
-- Session key lưu trong file cache ở dạng có thể đọc được bởi user/process có quyền đọc file.
-- Chưa có cache isolation theo OS session.
+- Session key lưu dưới dạng nhị phân thô trong file ccache, có thể bị đánh cắp bởi user hoặc process có quyền đọc file trên máy cục bộ.
+- Chưa có cơ chế cache isolation theo OS session.
 
 ## Crypto Model
 
-Project dùng ASN.1/DER cho outer message và `cryptography.fernet.Fernet` để mã hóa plaintext dict bên trong `EncryptedData.cipher`. Fernet cung cấp encryption và integrity check ở mức library, phù hợp cho demo dễ đọc.
+Project sử dụng định dạng ASN.1/DER cho cả message ngoài và các cấu trúc mã hóa bên trong. Việc mã hóa sử dụng các thuật toán đối xứng chuẩn Kerberos V5 (AES-CTS kết hợp HMAC-SHA1-96 checksum) và dẫn xuất khóa (nfold + PBKDF2-HMAC-SHA1 + derive-random DK) tuân thủ RFC 3961/3962.
 
 Trong project:
 
-- `derive_key()` dùng PBKDF2-HMAC-SHA256.
-- `generate_session_key()` dùng `os.urandom(32)`.
-- `core/asn1_codec.py` encode/decode outer message DER.
-- `encrypt()` serialize dict thành JSON rồi Fernet encrypt trước khi đặt token vào `EncryptedData.cipher`.
-- `decrypt()` Fernet decrypt rồi parse JSON.
+- `derive_key()` dùng PBKDF2-HMAC-SHA1 kết hợp `nfold` và `derive_random` với hằng "kerberos" theo chuẩn RFC 3962.
+- `generate_session_key()` tạo khóa ngẫu nhiên 16 bytes hoặc 32 bytes tương ứng với các enctype AES-128 và AES-256.
+- `core/asn1_codec.py` định nghĩa và encode/decode toàn bộ các cấu trúc ASN.1 DER (bao gồm cả outer message và inner encrypted parts như `EncTicketPart`, `EncKDCRepPart`, `Authenticator`, `EncAPRepPart`, `PaEncTimestamp`).
+- `encrypt()` mã hóa dữ liệu sử dụng chế độ AES-CTS tự triển khai cùng checksum HMAC-SHA1-96, áp dụng Key Usage thích hợp.
+- `decrypt()` giải mã và xác minh tính toàn vẹn của dữ liệu thông qua so sánh checksum HMAC-SHA1-96, áp dụng Key Usage tương ứng.
 
-Giới hạn quan trọng:
-
-- Không dùng Kerberos encryption types thật như AES CTS HMAC SHA1/SHA2.
-- Không có key usage number theo Kerberos.
-- Không có checksum theo RFC 3961.
-- ASN.1/DER hiện mới bao phủ outer message; encrypted payload bên trong vẫn là demo.
+Ưu điểm nổi bật:
+- Triển khai chuẩn các enctype `aes256-cts-hmac-sha1-96` (18) và `aes128-cts-hmac-sha1-96` (17).
+- Hỗ trợ đầy đủ Key Usage theo đặc tả của RFC 4120.
+- Checksum HMAC-SHA1-96 được tính toán trên ciphertext để bảo vệ tính toàn vẹn.
+- Toàn bộ dữ liệu trao đổi (cả phần header và phần payload mã hóa) đều được đóng gói và serialize dưới dạng ASN.1 DER nhị phân chuẩn.
 
 ## Bảo Mật Kênh Truyền Thông
 
@@ -265,19 +259,13 @@ Giới hạn:
 
 ## Hạn Chế So Với Kerberos Production
 
-Project chưa implement:
+Dù dự án đã tích hợp nhiều tính năng nâng cao (như mã hóa chuẩn AES-CTS với HMAC-SHA1-96, xác thực chéo Realm, subkey/seq-number, authorization data/PAC, ccache/keytab nhị phân chuẩn MIT và KAdmin Web Console/REST API), hệ thống vẫn chưa phải là một Kerberos production hoàn chỉnh do:
 
-- Kerberos encryption types, checksum và key usage chuẩn.
-- Cross-realm trust.
-- Principal canonicalization đầy đủ theo policy KDC/DNS.
-- Renew, forward, delegate flow đầy đủ.
-- Subkey và sequence number.
-- Authorization data/PAC như Active Directory.
-- Keytab và ccache binary chuẩn.
-- Secret manager, key rotation hoàn chỉnh và permission hardening.
-- TLS/mTLS cho TCP channel.
-- Principal management CLI/API.
-- Rate limiting và account lockout.
+- Chưa hỗ trợ đầy đủ các tính năng principal canonicalization theo policy KDC/DNS.
+- Chưa hỗ trợ luồng ủy quyền chuyển tiếp vé phức tạp (forward/delegate) đầy đủ.
+- Chưa tích hợp mã hóa kênh truyền TLS/mTLS cho các socket TCP (metadata như IP, port và timing của bản tin wire ASN.1 vẫn có thể bị quan sát).
+- Chưa tích hợp với Secret Manager chuyên dụng, cơ chế tự động key rotation định kỳ và tự động hard-lock file permission.
+- Chưa triển khai rate limiting và account lockout để chống brute-force tấn công pre-authentication trực tiếp ở KDC.
 
 ## Threat Model
 
@@ -291,11 +279,11 @@ Replay authenticator trong TGS/AP bị chặn bằng SQLite replay cache nếu r
 
 ### Attacker sửa packet
 
-Payload bị sửa thường làm Fernet decrypt fail. Server trả lỗi tương ứng như `KRB_AP_ERR_MODIFIED` hoặc `KDC_ERR_PREAUTH_FAILED`.
+Payload bị sửa đổi thường dẫn tới việc xác minh checksum HMAC-SHA1-96 thất bại. Server sẽ ném ngoại lệ `InvalidToken` và trả về mã lỗi tương ứng như `KRB_AP_ERR_MODIFIED` hoặc `KDC_ERR_PREAUTH_FAILED`.
 
 ### Attacker lấy được credential cache client
 
-Nếu attacker đọc được `client/krb5cc_demo.json`, họ có thể lấy ticket và session key còn hiệu lực. Đây tương đương rủi ro pass-the-ticket trong thời gian ticket chưa hết hạn.
+Nếu attacker đọc được `client/krb5cc_demo`, họ có thể lấy ticket và session key còn hiệu lực. Đây tương đương rủi ro pass-the-ticket trong thời gian ticket chưa hết hạn.
 
 ### Attacker lấy được keytab
 
@@ -316,14 +304,11 @@ Nếu làm đồng hồ lệch quá `MAX_CLOCK_SKEW`, attacker có thể gây l�
 
 ## Khuyến Nghị Nâng Cấp Tiếp
 
-1. Thêm admin CLI cho tạo principal, disable principal và rotate key.
-2. Thêm key version rotation thực sự cho TGS và service.
-3. Thêm permission hardening cho keytab và credential cache.
-4. Thêm rate limiting cho AS pre-authentication failure.
-5. Thêm test tự động cho replay, tampering, expiration, wrong realm và wrong service.
-6. Thêm audit log cho Application Server.
-7. Tách replay cache sang backend dùng chung nếu mô phỏng nhiều instance.
-8. Nếu mục tiêu là tương thích Kerberos thật, cần thay Fernet bằng enctype/checksum/key usage chuẩn và keytab/ccache chuẩn.
+1. Thêm permission hardening cho keytab và credential cache ở cấp hệ điều hành (đọc/ghi giới hạn cho process chạy dịch vụ/client).
+2. Thêm rate limiting cho AS pre-authentication failure tại KDC để hạn chế brute force password.
+3. Thêm test tự động kiểm tra replay, tampering, expiration, wrong realm và wrong service.
+4. Thêm audit log chi tiết cho Application Server.
+5. Tách replay cache sang các hệ quản trị database phân tán hoặc Redis dùng chung hiệu năng cao hơn nếu mở rộng nhiều instance KDC.
 
 ## Security Checklist
 
@@ -338,13 +323,15 @@ Nếu làm đồng hồ lệch quá `MAX_CLOCK_SKEW`, attacker có thể gây l�
 | Wrong realm rejection | Có |
 | PBKDF2 với salt theo principal | Có |
 | Ticket có flags và lifetime | Có |
-| Keytab cho Application Server | Có, JSON demo |
-| Credential cache bền vững | Có, JSON demo |
+| Keytab cho Application Server | Có, MIT Keytab v2 nhị phân |
+| Credential cache bền vững | Có, MIT ccache v4 nhị phân |
 | Replay cache bền vững | Có, SQLite |
 | Mutual authentication | Có |
 | Audit log KDC | Có |
+| Xác thực chéo Realm (Cross-Realm Trust) | Có (2-hop TGS exchange) |
+| Giao diện quản trị KAdmin / REST API | Có (Cổng 8088 với audit logs thực tế) |
 | Secret manager | Chưa |
-| Authorization/PAC | Chưa |
+| Authorization/PAC | Có (RBAC nhóm admin/user nhúng trong ticket) |
 | TLS/mTLS cho TCP channel | Chưa |
-| Kerberos enctype/checksum/key usage chuẩn | Chưa |
-| Tương thích MIT Kerberos/Active Directory | Chưa |
+| Kerberos enctype/checksum/key usage chuẩn | Có (aes256-cts-hmac-sha1-96, aes128-cts-hmac-sha1-96) |
+| Tương thích cấu trúc MIT Kerberos/Active Directory | Mô phỏng sát chuẩn ở mức cấu trúc lưu trữ và wire format |

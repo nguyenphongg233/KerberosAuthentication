@@ -45,23 +45,21 @@ Các handler AS/TGS/AP vẫn làm việc với dict nội bộ để code dễ �
 | `EncryptedData` | Chứa `etype`, `kvno` tùy chọn và `cipher` |
 | `Ticket` | Wrapper ASN.1 cho TGT và service ticket |
 | `PA-DATA` | Chứa pre-auth hoặc PA-TGS-REQ |
-| `KDC-REQ` | Base structure cho AS-REQ/TGS-REQ |
-| `KDC-REP` | Base structure cho AS-REP/TGS-REP |
 
-## EncryptedData Trong Demo
+## EncryptedData
 
-`EncryptedData.cipher` là OCTET STRING trong DER. Nội dung OCTET STRING là Fernet token của demo, không phải ciphertext của Kerberos enctype thật.
+`EncryptedData` chứa thông tin mã hóa tuân thủ theo RFC 3961/3962.
 
-| Field | Giá trị hiện tại |
+| Field | Mô tả |
 | --- | --- |
-| `etype` | `-128`, private demo enctype |
-| `kvno` | `1` cho ticket enc-part |
-| `cipher` | UTF-8 bytes của Fernet token |
+| `etype` | `18` (aes256-cts-hmac-sha1-96) hoặc `17` (aes128-cts-hmac-sha1-96) |
+| `kvno` | Key version number (tùy chọn) |
+| `cipher` | Ciphertext (gồm 16-byte random confounder + DER plaintext + 12-byte HMAC-SHA1-96 checksum) |
 
 Tên mô tả trong payload nội bộ:
 
 ```text
-fernet-aes128-hmac-sha256-pbkdf2
+aes256-cts-hmac-sha1-96 / aes128-cts-hmac-sha1-96
 ```
 
 ## AS-REQ
@@ -83,7 +81,7 @@ Các field chính:
 | `req-body.realm` | Realm |
 | `req-body.sname` | TGS principal |
 | `req-body.nonce` | UInt32 nonce |
-| `req-body.etype` | `[-128]` |
+| `req-body.etype` | `[18, 17]` |
 
 Internal view sau khi decode:
 
@@ -93,7 +91,8 @@ Internal view sau khi decode:
   "client_principal": "alice@DEMO.LOCAL",
   "realm": "DEMO.LOCAL",
   "nonce": 123456789,
-  "preauth": "E_Kc(preauth)"
+  "preauth": "bytes ciphertext",
+  "preauth_enctype": 18
 }
 ```
 
@@ -111,10 +110,21 @@ Các field chính:
 | --- | --- |
 | `pvno` | `5` |
 | `msg-type` | `11` |
-| `crealm` | Client realm |
+| `crealm` | Realm của client |
 | `cname` | Client principal |
-| `ticket` | ASN.1 `Ticket` chứa TGT cipher |
-| `enc-part` | `EncryptedData` mã hóa client part bằng `Kc` |
+| `ticket` | TGT |
+| `enc-part` | `EncryptedData` chứa `EncKDCRepPart` mã hóa bằng `Kc` |
+
+Phần plaintext của `enc-part` sau khi giải mã là `EncKDCRepPart` gồm:
+
+- `key`: Khóa phiên Client-TGS `Kc_tgs`.
+- `last-req`: Lịch sử request (không dùng).
+- `nonce`: Khớp với nonce trong request.
+- `key-expiration`: Hạn dùng khóa (không dùng).
+- `flags`: Cờ của vé.
+- `authtime`, `starttime`, `endtime`, `renew-till`: Các mốc thời gian của vé.
+- `srealm`: Realm của TGS.
+- `sname`: TGS principal name (`krbtgt/DEMO.LOCAL`).
 
 Internal view:
 
@@ -123,8 +133,8 @@ Internal view:
   "msg_type": "AS_REP",
   "realm": "DEMO.LOCAL",
   "client_principal": "alice@DEMO.LOCAL",
-  "encrypted_data": "E_Kc(client_part)",
-  "tgt": "E_Ktgs(tgt)"
+  "encrypted_data": "bytes ciphertext",
+  "tgt": "bytes DER Ticket"
 }
 ```
 
@@ -136,17 +146,29 @@ Wire format:
 TGS-REQ ::= [APPLICATION 12] KDC-REQ
 ```
 
-`PA-TGS-REQ` type `1` chứa một `AP-REQ` DER. `AP-REQ` này mang TGT trong `ticket` và TGS authenticator trong `authenticator`.
+Các field chính:
 
-Internal view:
+| ASN.1 field | Giá trị demo |
+| --- | --- |
+| `pvno` | `5` |
+| `msg-type` | `12` |
+| `padata` | Chứa `PA-TGS-REQ` type `1` có giá trị là `AP-REQ` DER |
+| `req-body.realm` | Realm |
+| `req-body.sname` | Service principal |
+| `req-body.nonce` | UInt32 nonce |
+| `req-body.etype` | `[18, 17]` |
+
+Internal view sau khi decode:
 
 ```json
 {
   "msg_type": "TGS_REQ",
   "realm": "DEMO.LOCAL",
   "service_principal": "fileserver/localhost@DEMO.LOCAL",
-  "tgt": "E_Ktgs(tgt)",
-  "authenticator": "E_Kc_tgs(authenticator)",
+  "tgt": "bytes ciphertext của Ticket",
+  "tgt_enctype": 18,
+  "authenticator": "bytes ciphertext của Authenticator",
+  "authenticator_enctype": 18,
   "nonce": 987654321
 }
 ```
@@ -159,7 +181,9 @@ Wire format:
 TGS-REP ::= [APPLICATION 13] KDC-REP
 ```
 
-Internal view:
+Các field chính giống `AS-REP`, ngoại trừ `ticket` là service ticket và `enc-part` là `EncKDCRepPart` mã hóa bằng `Kc_tgs`.
+
+Internal view sau khi decode:
 
 ```json
 {
@@ -167,8 +191,8 @@ Internal view:
   "realm": "DEMO.LOCAL",
   "client_principal": "alice@DEMO.LOCAL",
   "service_principal": "fileserver/localhost@DEMO.LOCAL",
-  "encrypted_data": "E_Kc_tgs(client_part)",
-  "service_ticket": "E_Kservice(service_ticket)"
+  "encrypted_data": "bytes ciphertext",
+  "service_ticket": "bytes DER Ticket"
 }
 ```
 
@@ -186,18 +210,31 @@ Các field chính:
 | --- | --- |
 | `pvno` | `5` |
 | `msg-type` | `14` |
-| `ap-options` | BitString 32 bit, hiện chưa set option |
-| `ticket` | ASN.1 `Ticket` chứa service ticket cipher |
-| `authenticator` | `EncryptedData` mã hóa bằng `Kc_service` |
+| `ap-options` | KerberosFlags (`mutual-required` hoặc rỗng) |
+| `ticket` | Service ticket nhận được từ TGS |
+| `authenticator` | `EncryptedData` chứa `Authenticator` đã mã hóa |
 
-Internal view:
+Phần plaintext của `authenticator` sau khi giải mã là `Authenticator` gồm:
+
+- `authenticator-vno`: `5`.
+- `crealm`: Realm của client.
+- `cname`: Client principal.
+- `cksum`: Checksum dữ liệu (không dùng).
+- `cusec`: Microseconds của client.
+- `ctime`: Thời gian hiện tại của client.
+- `subkey`: Subkey do client đề xuất (không dùng).
+- `seq-number`: Sequence number (không dùng).
+
+Internal view sau khi decode:
 
 ```json
 {
   "msg_type": "AP_REQ",
-  "service_principal": "fileserver/localhost@DEMO.LOCAL",
-  "service_ticket": "E_Kservice(service_ticket)",
-  "authenticator": "E_Kc_service(authenticator)"
+  "mutual_auth": true,
+  "ticket": "bytes ciphertext của Ticket",
+  "ticket_enctype": 18,
+  "authenticator": "bytes ciphertext của Authenticator",
+  "authenticator_enctype": 18
 }
 ```
 
@@ -209,12 +246,27 @@ Wire format:
 AP-REP ::= [APPLICATION 15] SEQUENCE
 ```
 
-Internal view:
+Các field chính:
+
+| ASN.1 field | Giá trị demo |
+| --- | --- |
+| `pvno` | `5` |
+| `msg-type` | `15` |
+| `enc-part` | `EncryptedData` chứa `EncAPRepPart` đã mã hóa |
+
+Phần plaintext của `enc-part` sau khi giải mã là `EncAPRepPart` gồm:
+
+- `ctime`: Thời gian nhận được từ authenticator.
+- `cusec`: Microseconds nhận được từ authenticator.
+- `subkey`: Subkey đề xuất bởi server (không dùng).
+- `seq-number`: Sequence number (không dùng).
+
+Internal view sau khi decode:
 
 ```json
 {
   "msg_type": "AP_REP",
-  "encrypted_data": "E_Kc_service({ timestamp: client_timestamp + 1 })"
+  "encrypted_data": "bytes ciphertext"
 }
 ```
 
@@ -233,26 +285,18 @@ Các field chính:
 | `tkt-vno` | `5` |
 | `realm` | Realm của server principal |
 | `sname` | TGS hoặc service principal |
-| `enc-part` | `EncryptedData` chứa Fernet token của ticket plaintext |
+| `enc-part` | `EncryptedData` chứa DER bytes của `EncTicketPart` đã mã hóa |
 
-Ticket plaintext bên trong Fernet vẫn là dict demo, ví dụ TGT:
+Phần plaintext sau khi giải mã `enc-part` là cấu trúc ASN.1 `EncTicketPart` (ví dụ đối với TGT):
 
-```json
-{
-  "ticket_type": "TGT",
-  "realm": "DEMO.LOCAL",
-  "client_principal": "alice@DEMO.LOCAL",
-  "server_principal": "krbtgt/DEMO.LOCAL@DEMO.LOCAL",
-  "client_tgs_session_key": "base64-fernet-key",
-  "authtime": 1780770148.123,
-  "starttime": 1780770148.123,
-  "endtime": 1780770748.123,
-  "renew_till": 1780773748.123,
-  "flags": ["initial", "pre_authent", "renewable"],
-  "kvno": 1,
-  "enctype": "fernet-aes128-hmac-sha256-pbkdf2"
-}
-```
+- `flags`: Cờ của ticket (ví dụ: initial, pre-authent, renewable).
+- `key`: Khóa phiên (gồm `keytype` = 18 và `keyvalue` = 32 bytes khóa).
+- `crealm`: Realm của client (`DEMO.LOCAL`).
+- `cname`: Principal của client (`alice`).
+- `authtime`: Thời gian xác thực (`KerberosTime`).
+- `starttime`: Thời gian bắt đầu có hiệu lực (`KerberosTime`).
+- `endtime`: Thời gian hết hạn (`KerberosTime`).
+- `renew-till`: Thời gian tối đa được gia hạn (`KerberosTime`).
 
 ## KRB-ERROR
 

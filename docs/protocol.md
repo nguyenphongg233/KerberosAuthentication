@@ -1,6 +1,6 @@
 # Giao Thức Mô Phỏng
 
-Tài liệu này mô tả cách project mô phỏng Kerberos V5 theo RFC 4120 ở mức cấu trúc và hành vi. Outer wire message mặc định dùng ASN.1/DER cho `AS-REQ`, `AS-REP`, `TGS-REQ`, `TGS-REP`, `AP-REQ`, `AP-REP`, `KRB-ERROR` và `Ticket`. Phần plaintext bên trong `EncryptedData.cipher` vẫn là dict JSON được mã hóa bằng Fernet để giữ demo dễ đọc.
+Tài liệu này mô tả cách project mô phỏng Kerberos V5 theo RFC 4120 ở mức cấu trúc và hành vi. Cả message ngoài (outer wire messages) và tất cả các payload mã hóa bên trong (inner encrypted structures như `EncTicketPart`, `EncKDCRepPart`, `Authenticator`, `EncAPRepPart`, `PaEncTimestamp`) đều được tuần tự hóa bằng định dạng ASN.1/DER (sử dụng thư viện `pyasn1`). Dữ liệu được mã hóa bằng thuật toán AES-CTS kết hợp checksum HMAC-SHA1-96 (enctype `aes256-cts-hmac-sha1-96` và `aes128-cts-hmac-sha1-96`) và Key Usage theo đúng RFC 3961/3962.
 
 ## Ký Hiệu
 
@@ -80,7 +80,11 @@ Principal:
 
 ```text
 alice@DEMO.LOCAL
+```
+```text
 krbtgt/DEMO.LOCAL@DEMO.LOCAL
+```
+```text
 fileserver/localhost@DEMO.LOCAL
 ```
 
@@ -100,20 +104,18 @@ Client tạo pre-authentication data:
 }
 ```
 
-Payload này được mã hóa bằng `Kc`.
+Pre-authentication được mã hóa bằng `Kc` với key usage `1` (PA-ENC-TIMESTAMP).
 
-AS_REQ ở góc nhìn logic. Trên wire, dữ liệu này được encode thành `AS-REQ ::= [APPLICATION 10] KDC-REQ`; `preauth` nằm trong `padata` type `PA-ENC-TIMESTAMP`:
+AS_REQ ở góc nhìn logic. Trên wire, dữ liệu này được encode thành `AS-REQ ::= [APPLICATION 10] KDC-REQ`; `preauth` nằm trong `padata` type `PA-ENC-TIMESTAMP` dưới dạng `EncryptedData`:
 
 ```json
 {
   "msg_type": "AS_REQ",
   "client_principal": "alice@DEMO.LOCAL",
   "realm": "DEMO.LOCAL",
-  "timestamp": 1780770148.123,
-  "ctime": 1780770148,
-  "cusec": 123000,
   "nonce": 123456789,
-  "preauth": "E_Kc(preauth)"
+  "preauth": "E_Kc(preauth)",
+  "preauth_enctype": 18
 }
 ```
 
@@ -121,14 +123,15 @@ AS_REQ ở góc nhìn logic. Trên wire, dữ liệu này được encode thành
 
 AS kiểm tra:
 
+- Realm trong request khớp realm KDC.
 - Principal tồn tại trong DB.
-- Realm trong request là realm KDC đang phục vụ.
-- `preauth` giải mã được bằng key của principal.
-- Principal trong pre-auth khớp request.
-- Realm trong pre-auth khớp realm KDC.
-- Timestamp nằm trong `MAX_CLOCK_SKEW`.
+- `preauth` giải mã được bằng khóa của client `Kc`.
+- `ctime` trong preauth không bị lệch quá clock skew (5 phút).
+- `ctime` + `cusec` chưa tồn tại trong replay cache (chống replay).
 
-### TGT
+Nếu ok, AS sinh session key `Kc_tgs`.
+
+### TGT (Ticket Granting Ticket)
 
 TGT plaintext trước khi mã hóa bằng `Ktgs`:
 
@@ -145,7 +148,7 @@ TGT plaintext trước khi mã hóa bằng `Ktgs`:
   "renew_till": 1780773748.123,
   "flags": ["initial", "pre_authent", "renewable"],
   "kvno": 1,
-  "enctype": "fernet-aes128-hmac-sha256-pbkdf2"
+  "enctype": 18
 }
 ```
 
@@ -242,7 +245,7 @@ Service ticket plaintext trước khi mã hóa bằng `Kservice`:
   "endtime": 1780770748.123,
   "flags": ["pre_authent", "renewable"],
   "kvno": 1,
-  "enctype": "fernet-aes128-hmac-sha256-pbkdf2"
+  "enctype": 18
 }
 ```
 
@@ -263,11 +266,29 @@ Trên wire, message là `TGS-REP ::= [APPLICATION 13] KDC-REP`.
 
 Client part chứa `Kc_service`, nonce, service principal, flags và thời gian hiệu lực. Service ticket luôn có `pre_authent`; nếu TGT có `renewable` hoặc `forwardable`, TGS giữ lại các flag tương ứng.
 
-## AP Exchange
+## AP Exchange (Mô phỏng HTTP SPNEGO - RFC 4559)
+
+Pha AP Exchange không còn truyền nhận gói tin nhị phân qua TCP Socket thô. Thay vào đó, nó mô phỏng cơ chế GSS-API / SPNEGO qua HTTP.
+
+### Bắt tay HTTP SPNEGO (Negotiate)
+
+1. **GET không xác thực**: Client gửi HTTP GET request ban đầu.
+2. **HTTP 401 Challenge**: Server phản hồi `401 Unauthorized` kèm header:
+   ```http
+   WWW-Authenticate: Negotiate
+   ```
+3. **GET có xác thực**: Client chuẩn bị gói tin `AP-REQ` dưới dạng DER, mã hóa Base64 và gửi lại request GET kèm header:
+   ```http
+   Authorization: Negotiate <Base64(AP-REQ DER)>
+   ```
+4. **HTTP 200 OK**: Server xác thực thành công, phản hồi `200 OK` kèm header:
+   ```http
+   WWW-Authenticate: Negotiate <Base64(AP-REP DER)>
+   ```
 
 ### AP_REQ
 
-Client gửi ở góc nhìn logic. Trên wire, message là `AP-REQ ::= [APPLICATION 14]`:
+Cấu trúc logic của `AP-REQ` nhị phân (sau khi giải mã Base64 từ Negotiate token) tuân theo `AP-REQ ::= [APPLICATION 14]`:
 
 ```json
 {
@@ -282,7 +303,7 @@ Authenticator tương tự TGS authenticator nhưng được mã hóa bằng `Kc
 
 ### AP Validation
 
-Application Server kiểm tra:
+Application Server giải mã Base64 token từ header `Authorization: Negotiate <token>`, chuyển thành gói tin DER và kiểm tra:
 
 - Service ticket giải mã được bằng key từ keytab.
 - `server_principal` trong ticket khớp principal của service.
@@ -295,17 +316,17 @@ Application Server kiểm tra:
 
 ### AP_REP
 
-Server trả ở góc nhìn logic. Trên wire, message là `AP-REP ::= [APPLICATION 15]`:
+Server trả phản hồi `AP-REP` được mã hóa Base64 và đặt trong header `WWW-Authenticate: Negotiate <ap_rep_token>`. Cấu trúc nhị phân của `AP-REP` là `AP-REP ::= [APPLICATION 15]`:
 
 ```json
 {
   "msg_type": "AP_REP",
   "service_principal": "fileserver/localhost@DEMO.LOCAL",
-  "encrypted_data": "E_Kc_service({ timestamp: client_timestamp + 1, service_data })"
+  "encrypted_data": "E_subkey(ctime, cusec, subkey, seq_number)"
 }
 ```
 
-Client giải mã AP_REP và kiểm `timestamp = client_timestamp + 1` để xác minh mutual authentication.
+Client giải mã AP_REP sử dụng `client_subkey` đã gửi (nếu có, hoặc khóa phiên `Kc_service`) và kiểm `ctime`/`cusec` từ authenticator gốc để xác minh mutual authentication. Đồng thời, hai bên thương lượng khóa con (subkey) và số thứ tự (sequence number) cho các thông điệp tiếp theo.
 
 ## Sequence Diagram
 
@@ -316,17 +337,47 @@ sequenceDiagram
     participant TGS as KDC TGS
     participant S as fileserver
 
-    C->>AS: AS_REQ(cname, realm, nonce, preauth)
+    C->>AS: AS_REQ(cname, realm, nonce, preauth, kdc_options=['renewable'])
     AS->>AS: Validate preauth with Kc
     AS-->>C: AS_REP(E_Kc(Kc_tgs, nonce, times, flags), TGT)
     C->>C: Cache TGT
 
-    C->>TGS: TGS_REQ(TGT, sname, nonce, authenticator)
-    TGS->>TGS: Validate TGT, authenticator, replay cache
-    TGS-->>C: TGS_REP(E_Kc_tgs(Kc_service, nonce, times), ST)
-    C->>C: Cache service ticket
+    Note over C,AS: [TGT Renewal (Nếu hết hạn endtime)]
+    C->>TGS: TGS_REQ(TGT, krbtgt, nonce, authenticator, kdc_options=['renew'])
+    TGS->>TGS: Decrypt TGT, verify renew_till, reissue TGT
+    TGS-->>C: TGS_REP(E_old_Kc_tgs(new_Kc_tgs), renewed_TGT)
+    C->>C: Update Cache with renewed TGT
 
-    C->>S: AP_REQ(ST, authenticator)
-    S->>S: Validate ST, authenticator, replay cache
-    S-->>C: AP_REP(E_Kc_service(timestamp + 1))
+    C->>TGS: TGS_REQ(TGT, sname, nonce, authenticator)
+    TGS->>TGS: Validate TGT & authenticator; copy authorization-data (groups)
+    TGS-->>C: TGS_REP(E_Kc_tgs(Kc_service, nonce, times), ST)
+    C->>C: Cache service ticket (ST)
+
+    Note over C,S: [AP Exchange via HTTP SPNEGO (RFC 4559)]
+    C->>S: HTTP GET /
+    S-->>C: HTTP 401 Unauthorized (WWW-Authenticate: Negotiate)
+    C->>S: HTTP GET / (Authorization: Negotiate Base64(AP_REQ))
+    S->>S: Validate ST, extract groups, enforce RBAC, extract client subkey
+    S-->>C: HTTP 200 OK (WWW-Authenticate: Negotiate Base64(AP_REP))
 ```
+
+## Các Tính Năng Nâng Cao (Advanced Features)
+
+### 1. Subkey & Sequence Number Handshake
+Trong quá trình xác thực dịch vụ (AP Exchange):
+- **Client** tạo ngẫu nhiên một khóa con dùng riêng (`client_subkey`) và số thứ tự bắt đầu (`seq-number`), đặt chúng vào cấu trúc `Authenticator` gửi đi trong `AP-REQ`.
+- **Server (Application Server)** trích xuất `client_subkey` này để mã hóa gói tin phản hồi `AP-REP`. Đồng thời, Server sinh thêm khóa con (`server_subkey`) và số thứ tự của Server (`seq-number`) gửi lại cho Client trong `EncAPRepPart`.
+- Việc thương lượng này giúp phân tách và bảo mật các thông tin trao đổi dữ liệu sau đó (không dùng trực tiếp khóa phiên gốc `Kc_service`).
+
+### 2. Gia hạn vé (TGT Renewal)
+- Khi yêu cầu vé TGT lần đầu ở AS Exchange, Client có thể yêu cầu cờ gia hạn bằng việc chỉ định cờ `renewable` trong `kdc-options` của `AS-REQ`.
+- Vé TGT sẽ được cấp với cờ `renewable` và hạn gia hạn tối đa `renew-till` (ví dụ: 1 giờ hoặc 7 ngày).
+- Khi vé TGT gần hết hạn hoặc đã hết hạn `endtime` (nhưng chưa quá hạn `renew-till`), Client gửi một yêu cầu `TGS-REQ` lên KDC với cờ `renew` trong `kdc-options` và đính kèm vé TGT cũ.
+- KDC kiểm tra tính hợp lệ của TGT (đặc biệt là `renew-till`), cấp lại một TGT mới có thời gian hiệu lực `endtime` được gia hạn thành công (cực trị là `renew-till`).
+
+### 3. Dữ liệu ủy quyền (Authorization Data - PAC / RBAC)
+- KDC lưu trữ thông tin nhóm/vai trò của người dùng trong cơ sở dữ liệu (cột `groups` của bảng `principals` dạng mảng JSON).
+- Khi cấp TGT hoặc Service Ticket, KDC trích xuất thông tin này và mã hóa nó vào trường `authorization-data` (tag 10) của vé dưới dạng cấu trúc ASN.1 `AuthorizationData`.
+- Tại **Application Server**, khi giải mã Service Ticket, Server trích xuất `authorization-data` và phân quyền dựa trên vai trò (RBAC).
+  - Ví dụ: Tài khoản `alice@DEMO.LOCAL` thuộc nhóm `["users", "admins"]` được cấp quyền **Admin Access** để truy cập tài nguyên quản trị.
+  - Tài khoản `bob@DEMO.LOCAL` chỉ thuộc nhóm `["users"]` chỉ được truy cập tài nguyên thường (**User Access**).

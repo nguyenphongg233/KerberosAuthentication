@@ -1,6 +1,6 @@
 # Hướng Dẫn Vận Hành
 
-Tài liệu này mô tả cách cài đặt, cấu hình, chạy, kiểm tra và xử lý lỗi cho project KerberosAuthentication. Nội dung phản ánh phiên bản hiện tại: mô phỏng Kerberos V5 theo RFC 4120 ở mức cấu trúc và hành vi, dùng ASN.1/DER cho outer wire message và Fernet/JSON cho phần encrypted payload demo bên trong.
+Tài liệu này mô tả cách cài đặt, cấu hình, chạy, kiểm tra và xử lý lỗi cho project KerberosAuthentication. Nội dung phản ánh phiên bản hiện tại: mô phỏng Kerberos V5 theo RFC 4120 ở mức cấu trúc và hành vi, sử dụng định dạng ASN.1/DER cho cả outer message và các payload mã hóa bên trong. Hệ thống hỗ trợ enctype chuẩn `aes256-cts-hmac-sha1-96` và `aes128-cts-hmac-sha1-96` cùng với cơ chế Key Usage và dẫn xuất khóa chuẩn RFC 3961/3962.
 
 ## Yêu Cầu Môi Trường
 
@@ -52,7 +52,7 @@ Khi start, KDC tự thực hiện:
 - Tạo hoặc migration `kdc/database.db`.
 - Upsert các principal mặc định.
 - Tạo alias cho principal, ví dụ `alice` trỏ tới `alice@DEMO.LOCAL`.
-- Ghi service keytab tại `app_server/<APP_SERVICE_NAME>.keytab.json`, mặc định là `app_server/fileserver.keytab.json`.
+- Ghi service keytab tại `app_server/<APP_SERVICE_NAME>.keytab`, mặc định là `app_server/fileserver.keytab`.
 - Ghi audit event `database_initialized`.
 - Lắng nghe TCP tại `KDC_HOST:KDC_PORT`.
 
@@ -79,7 +79,7 @@ Log kỳ vọng:
 ```text
 Kerberos Application Server (File Server)
 Principal: fileserver/localhost@DEMO.LOCAL
-Keytab:    ...\app_server\fileserver.keytab.json
+Keytab:    ...\app_server\fileserver.keytab
 Listening on 127.0.0.1:8000
 ```
 
@@ -118,8 +118,8 @@ Full Kerberos authentication completed successfully
 | `APP_SERVER_HOST` | `127.0.0.1` | Địa chỉ bind của Application Server và target của client |
 | `APP_SERVER_PORT` | `8000` | Port bind của Application Server và target của client |
 | `KRB_WIRE_FORMAT` | `der` | `der` dùng ASN.1/DER, `json` chỉ dùng khi debug legacy |
-| `APP_SERVER_KEYTAB` | `app_server/<APP_SERVICE_NAME>.keytab.json` | File keytab Application Server đọc khi start |
-| `KRB5CCNAME` | `client/krb5cc_demo.json` | File credential cache của client |
+| `APP_SERVER_KEYTAB` | `app_server/<APP_SERVICE_NAME>.keytab` | File keytab Application Server đọc khi start |
+| `KRB5CCNAME` | `client/krb5cc_demo` | File credential cache của client |
 | `KRB_REPLAY_CACHE` | Giá trị `KDC_DB_PATH` | SQLite file chứa replay cache |
 | `PYTHONIOENCODING` | Không set | Có thể set `utf-8` nếu terminal Windows gặp lỗi encoding |
 
@@ -175,8 +175,8 @@ Client cho phép nhập `alice`; code sẽ chuẩn hóa thành `alice@DEMO.LOCAL
 | File | Tạo bởi | Nội dung |
 | --- | --- | --- |
 | `kdc/database.db` | KDC | Principal store, alias, audit log, replay cache |
-| `app_server/<APP_SERVICE_NAME>.keytab.json` | KDC | Service principal, kvno, enctype và long-term key của service |
-| `client/krb5cc_demo.json` | Client | TGT, service ticket, session key và metadata còn hiệu lực |
+| `app_server/<APP_SERVICE_NAME>.keytab` | KDC | Service principal, kvno, enctype và long-term key của service |
+| `client/krb5cc_demo` | Client | TGT, service ticket, session key và metadata còn hiệu lực |
 
 Các file keytab và credential cache là artifact runtime của demo. Không nên commit chúng vào repository.
 
@@ -371,7 +371,7 @@ Cách xử lý:
 
 ### Client dùng ticket cũ ngoài ý muốn
 
-Client lưu credential cache ở `client/krb5cc_demo.json` hoặc path trong `KRB5CCNAME`. Nếu muốn chạy lại từ AS Exchange với ticket mới, xóa cache file này sau khi dừng client.
+Client lưu credential cache ở `client/krb5cc_demo` hoặc path trong `KRB5CCNAME`. Nếu muốn chạy lại từ AS Exchange với ticket mới, xóa cache file này sau khi dừng client.
 
 ### UnicodeEncodeError trên Windows
 

@@ -1,6 +1,6 @@
 # Dàn Ý Báo Cáo - KerberosAuthentication
 
-Tài liệu này là dàn ý báo cáo chi tiết cho project KerberosAuthentication. Báo cáo nên trình bày rõ: dự án mô phỏng Kerberos V5 dựa trên RFC 4120 ở mức cấu trúc và hành vi, outer wire message đã dùng ASN.1/DER, nhưng chưa tương thích Kerberos production vì phần mã hóa bên trong vẫn là Fernet demo thay vì Kerberos enctype/checksum/key usage chuẩn.
+Tài liệu này là dàn ý báo cáo chi tiết cho project KerberosAuthentication. Báo cáo nên trình bày rõ: dự án mô phỏng Kerberos V5 dựa trên RFC 4120 ở mức cấu trúc và hành vi, cả message ngoài và các payload mã hóa bên trong đều đã được đóng gói nhị phân bằng cấu trúc ASN.1/DER chuẩn hóa. Hệ thống hỗ trợ các enctype chuẩn `aes256-cts-hmac-sha1-96` và `aes128-cts-hmac-sha1-96` thông qua mã hóa AES-CTS, checksum HMAC-SHA1-96, Key Usage và dẫn xuất khóa theo đúng RFC 3961/3962.
 
 ## 1. Giới Thiệu
 
@@ -12,8 +12,8 @@ Tài liệu này là dàn ý báo cáo chi tiết cho project KerberosAuthentica
   - Minh họa ticket, session key và authenticator.
   - Minh họa pre-authentication, replay protection và mutual authentication.
 - Phạm vi của project:
-  - Dùng Python, TCP socket, ASN.1/DER, SQLite và Fernet.
-  - Chưa triển khai Kerberos encryption type/checksum/key usage thật.
+  - Dùng Python, TCP socket, ASN.1/DER (thư viện `pyasn1`), SQLite và PyCryptodome.
+  - Đã triển khai thuật toán mật mã Kerberos chuẩn (AES-CTS, HMAC-SHA1-96, Key Usage, nfold + PBKDF2-HMAC-SHA1 + DK/DR).
 
 ## 2. Cơ Sở Lý Thuyết Kerberos V5
 
@@ -90,13 +90,13 @@ Client -> KDC AS -> Client -> KDC TGS -> Client -> Application Server
 - Bảng `principal_aliases`.
 - Bảng `audit_log`.
 - Bảng `replay_cache`.
-- Keytab JSON:
+- Keytab (định dạng nhị phân MIT Keytab v2):
   - Principal.
   - Realm.
   - KVNO.
   - Enctype.
   - Key.
-- Credential cache JSON:
+- Credential cache (định dạng nhị phân MIT ccache v4):
   - TGT.
   - Service ticket.
   - Session key.
@@ -140,16 +140,16 @@ Client -> KDC AS -> Client -> KDC TGS -> Client -> Application Server
 
 ## 7. Cơ Chế Mật Mã Và Bảo Vệ
 
-- PBKDF2-HMAC-SHA256 với 200.000 iterations.
-- Salt theo principal.
-- Session key ngẫu nhiên bằng `os.urandom(32)`.
-- Fernet cho encryption và integrity trong demo.
+- PBKDF2-HMAC-SHA1 dẫn xuất khóa với 1000 iterations và derive-random DK theo RFC 3962.
+- Salt theo chuẩn `REALMusername`.
+- Session key ngẫu nhiên bằng `os.urandom(16)` hoặc `os.urandom(32)`.
+- Mã hóa đối xứng AES-CTS kết hợp checksum HMAC-SHA1-96 bảo vệ tính bảo mật và toàn vẹn của payload.
 - ASN.1/DER cho outer message AS/TGS/AP/KRB-ERROR/Ticket.
 - Ticket lifetime và renewable lifetime.
 - `ctime/cusec` trong authenticator.
 - Persistent replay cache bằng SQLite.
-- Keytab JSON cho service key.
-- Credential cache JSON cho client.
+- Keytab nhị phân MIT Keytab v2 cho service key.
+- Credential cache nhị phân MIT ccache v4 cho client.
 - Audit log trong KDC.
 
 ## 8. Đối Chiếu Với RFC 4120
@@ -165,18 +165,14 @@ Client -> KDC AS -> Client -> KDC TGS -> Client -> Application Server
 - Session key.
 - Authenticator.
 - Ticket flags và lifetime.
-- Replay protection.
-- Mutual authentication.
+- Cấu trúc ASN.1/DER cho cả outer message và các inner encrypted parts.
+- Kerberos enctype (aes256-cts-hmac-sha1-96/aes128-cts-hmac-sha1-96), checksum (HMAC-SHA1-96), key usage chuẩn (RFC 3961/3962/4120).
+- Tiện ích CLI `kadmin.py` quản trị DB của KDC.
 
 Chưa triển khai:
 
-- Kerberos enctype, checksum và key usage chuẩn.
-- Cross-realm trust.
-- Principal canonicalization đầy đủ.
-- Renew/forward/delegate flow đầy đủ.
-- Subkey và sequence number.
-- Authorization data/PAC.
-- Keytab/ccache binary chuẩn.
+- Tương thích trực tiếp 100% với OS APIs (GSSAPI/SSPI).
+- Kênh truyền bảo mật TLS/mTLS cho các socket TCP.
 
 ## 9. Thử Nghiệm Và Kết Quả
 
@@ -216,17 +212,12 @@ Chưa triển khai:
 - Rủi ro nếu lộ KDC DB hoặc key `krbtgt`.
 - Hạn chế do chưa có secret manager, TLS, authorization và rate limiting.
 
-## 11. Hướng Phát Triển
-
-- Viết automated test suite.
-- Thêm admin CLI quản lý principal.
+- Thêm kênh bảo mật TLS/mTLS bảo vệ các socket TCP.
 - Thêm key rotation và KVNO history.
-- Thêm permission hardening cho keytab và credential cache.
+- Thêm permission hardening cho các file keytab và credential cache nhị phân.
 - Thêm rate limiting và account lockout.
-- Thêm authorization layer cho Application Server.
 - Thêm audit log phía Application Server.
-- Tách config thành module riêng.
-- Nếu cần tương thích Kerberos thật, triển khai enctype, checksum, key usage, keytab và ccache chuẩn.
+- Tách config thành các file cấu hình ngoài (YAML/INI).
 
 ## 12. Kết Luận
 

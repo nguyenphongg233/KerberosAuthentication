@@ -47,14 +47,12 @@ def principal_realm(principal: str, default: str = DEFAULT_REALM) -> str:
 
 def principal_salt(principal: str, realm: str | None = None) -> str:
     """
-    Return a deterministic per-principal salt.
-
-    Real Kerberos string-to-key salts are enctype-specific. This demo uses a
-    clear deterministic salt so the client can derive the same key as the KDC
-    before contacting the AS.
+    Return a standard RFC 3962 salt.
+    Concatenates the realm name followed by the principal name components.
     """
     normalized_realm = (realm or principal_realm(principal)).upper()
-    return f"{normalized_realm}:{principal}"
+    local = principal.split("@", 1)[0].replace("/", "")
+    return f"{normalized_realm}{local}"
 
 
 def principal_aliases(principal: str) -> list[str]:

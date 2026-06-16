@@ -70,7 +70,7 @@ Ví dụ service `mailserver/localhost@DEMO.LOCAL`:
     "principal_name": service_principal("mailserver", "localhost", REALM),
     "password": "mailserver_secret",
     "principal_type": "service",
-    "keytab_path": os.path.join(PROJECT_ROOT, "app_server", "mailserver.keytab.json"),
+    "keytab_path": os.path.join(PROJECT_ROOT, "app_server", "mailserver.keytab"),
 }
 ```
 
