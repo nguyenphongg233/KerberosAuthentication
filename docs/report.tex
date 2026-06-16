@@ -203,7 +203,7 @@ Các principal mặc định:
 \begin{table}[H]
 \centering
 \renewcommand{\arraystretch}{1.3}
-\begin{tabularx}{\textwidth}{|p{5.5cm}|p{3cm}|X|}
+\begin{tabularx}{\textwidth}{|p{7cm}|p{3cm}|X|}
 \hline
 \textbf{Principal} & \textbf{Loại} & \textbf{Vai trò} \\
 \hline
@@ -277,9 +277,9 @@ Project đã mô phỏng nhiều cấu trúc chính của Kerberos V5 nhưng ch�
 \node[box, right=3.5cm of kdc] (app) {Application Server\\ \texttt{fileserver/localhost@DEMO.LOCAL}};
 \node[box, below=of app] (keytab) {JSON Keytab\\ Service long-term key};
 
-\draw[arrow] (client) -- node[right]{AS-REQ / AS-REP} (kdc);
-\draw[arrow] (client.east) -- ++(1.0,0) |- node[pos=0.25, above]{TGS-REQ / TGS-REP} (kdc.east);
-\draw[arrow] (client.east) -- node[above]{AP-REQ / AP-REP} (app.west);
+\draw[arrow] (client) -- node[left]{AS-REQ / AS-REP} (kdc);
+\draw[arrow] (client.east) -- node[above, pos=0.7]{TGS-REQ / TGS-REP} ++(3.2,0) |- (kdc.east);
+\draw[arrow] (client.south east) -- node[sloped, above, pos=0.4]{AP-REQ / AP-REP} (app.west);
 \draw[arrow] (kdc) -- (cache);
 \draw[arrow] (app) -- (keytab);
 \end{tikzpicture}
@@ -291,7 +291,7 @@ Project đã mô phỏng nhiều cấu trúc chính của Kerberos V5 nhưng ch�
 \begin{table}[H]
 \centering
 \renewcommand{\arraystretch}{1.25}
-\begin{tabularx}{\textwidth}{|p{4.3cm}|X|}
+\begin{tabularx}{\textwidth}{|p{6cm}|X|}
 \hline
 \textbf{File/Module} & \textbf{Trách nhiệm} \\
 \hline
@@ -329,7 +329,7 @@ Project đã mô phỏng nhiều cấu trúc chính của Kerberos V5 nhưng ch�
 \begin{table}[H]
 \centering
 \renewcommand{\arraystretch}{1.25}
-\begin{tabularx}{\textwidth}{|p{4.1cm}|p{3.4cm}|X|}
+\begin{tabularx}{\textwidth}{|p{3.55cm}|p{7cm}|X|}
 \hline
 \textbf{Biến môi trường} & \textbf{Mặc định} & \textbf{Ý nghĩa} \\
 \hline
@@ -395,7 +395,7 @@ Session key được sinh bằng \texttt{os.urandom(32)} và encode thành Ferne
 \begin{table}[H]
 \centering
 \renewcommand{\arraystretch}{1.25}
-\begin{tabularx}{\textwidth}{|p{4cm}|p{5.2cm}|X|}
+\begin{tabularx}{\textwidth}{|p{4cm}|p{6cm}|X|}
 \hline
 \textbf{Khóa / secret} & \textbf{Vị trí lưu} & \textbf{Bên sử dụng} \\
 \hline
