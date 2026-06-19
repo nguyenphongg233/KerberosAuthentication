@@ -19,6 +19,7 @@ from core.crypto import (
     KEY_USAGE_TGS_REQ_AUTH,
     KEY_USAGE_TGS_REP_ENCPART,
     DEFAULT_ENCTYPE,
+    NAME_TO_ENCTYPE,
 )
 from core.asn1_codec import (
     decode_enc_ticket_part,
@@ -34,6 +35,7 @@ from core.messages import (
     KRB_AP_ERR_REPEAT,
     KRB_AP_ERR_SKEW,
     KRB_AP_ERR_TKT_EXPIRED,
+    KRB_AP_ERR_TKT_NYV,
     MAX_CLOCK_SKEW,
     REALM,
     SERVICE_TICKET_FLAGS,
@@ -42,7 +44,7 @@ from core.messages import (
     TICKET_LIFETIME,
 )
 from core.replay_cache import authenticator_cache_key, check_and_store
-from kdc.database import audit_event, get_principal
+from kdc.database import audit_event, get_principal, get_principal_key
 
 
 def handle_tgs_request(request: dict, db_cursor) -> dict:
@@ -82,7 +84,26 @@ def handle_tgs_request(request: dict, db_cursor) -> dict:
         return _error(KRB_AP_ERR_MODIFIED,
                       "Internal error: TGS principal not found.")
 
-    tgs_master_key = str_to_key(tgs_record["key"])
+    tgs_decrypt_record = get_principal_key(
+        db_cursor,
+        tgs_record["principal_name"],
+        kvno=request.get("tgt_kvno"),
+        enctype=tgt_enctype,
+        resolve_alias=False,
+    )
+    if tgs_decrypt_record is None:
+        print(f"  [TGS] ERROR: No TGS key for '{tgs_record['principal_name']}' "
+              f"kvno={request.get('tgt_kvno')} enctype={tgt_enctype}.")
+        audit_event(db_cursor, "TGS", "tgt_key_lookup", None, "failure",
+                    {
+                        "principal": tgs_record["principal_name"],
+                        "kvno": request.get("tgt_kvno"),
+                        "enctype": tgt_enctype,
+                    })
+        return _error(KRB_AP_ERR_MODIFIED,
+                      "TGT key version not found in KDC key history.")
+
+    tgs_master_key = str_to_key(tgs_decrypt_record["key"])
     try:
         # Decrypt TGT using KEY_USAGE_TICKET (2)
         tgt_der = decrypt(encrypted_tgt, tgs_master_key, KEY_USAGE_TICKET)
@@ -90,7 +111,11 @@ def handle_tgs_request(request: dict, db_cursor) -> dict:
     except InvalidToken:
         print(f"  [TGS] ERROR: Failed to decrypt TGT using principal '{tgt_service}'.")
         audit_event(db_cursor, "TGS", "tgt_decrypt", None, "failure",
-                    {"error": KRB_AP_ERR_MODIFIED})
+                    {
+                        "error": KRB_AP_ERR_MODIFIED,
+                        "principal": tgs_decrypt_record["principal_name"],
+                        "kvno": tgs_decrypt_record["kvno"],
+                    })
         return _error(KRB_AP_ERR_MODIFIED,
                       "TGT decryption failed - ticket may be tampered.")
 
@@ -121,6 +146,12 @@ def handle_tgs_request(request: dict, db_cursor) -> dict:
     is_renew_req = "renew" in kdc_options
 
     now = time.time()
+    if _ticket_not_yet_valid(tgt, now):
+        print("  [TGS] ERROR: TGT is not yet valid.")
+        audit_event(db_cursor, "TGS", "tgt_validate", client_principal,
+                    "failure", {"error": KRB_AP_ERR_TKT_NYV})
+        return _error(KRB_AP_ERR_TKT_NYV, "TGT is not yet valid.")
+
     if is_renew_req:
         if "renewable" not in tgt.get("flags", []):
             print("  [TGS] ERROR: TGT is not renewable.")
@@ -204,7 +235,8 @@ def handle_tgs_request(request: dict, db_cursor) -> dict:
             "authorization_data": tgt.get("authorization_data", []),
         }
         tgt_der = encode_enc_ticket_part(tgt_plaintext)
-        encrypted_new_tgt = encrypt(tgt_der, tgs_master_key, KEY_USAGE_TICKET)
+        current_tgs_master_key = str_to_key(tgs_record["key"])
+        encrypted_new_tgt = encrypt(tgt_der, current_tgs_master_key, KEY_USAGE_TICKET)
 
         tgs_rep_plaintext = {
             "key": {
@@ -227,6 +259,7 @@ def handle_tgs_request(request: dict, db_cursor) -> dict:
                     "success", {"endtime": endtime})
         print(f"  [TGS] TGT renewed for '{client_principal}'. New endtime: {endtime}")
 
+        tgs_enctype = NAME_TO_ENCTYPE.get(tgs_record["enctype"], session_enctype)
         return {
             "msg_type": TGS_REP,
             "realm": REALM,
@@ -234,7 +267,10 @@ def handle_tgs_request(request: dict, db_cursor) -> dict:
             "service_principal": TGS_PRINCIPAL,
             "encrypted_data": encrypted_tgs_rep,
             "service_ticket": encrypted_new_tgt,
-            "service_ticket_enctype": session_enctype,
+            "ticket_enctype": tgs_enctype,
+            "ticket_kvno": tgs_record["kvno"],
+            "service_ticket_enctype": tgs_enctype,
+            "service_ticket_kvno": tgs_record["kvno"],
             "enc_part_enctype": session_enctype,
         }
 
@@ -248,6 +284,7 @@ def handle_tgs_request(request: dict, db_cursor) -> dict:
 
     service_principal_name = service_record["principal_name"]
     service_master_key = str_to_key(service_record["key"])
+    service_enctype = NAME_TO_ENCTYPE.get(service_record["enctype"], session_enctype)
     
     # Generate session key for Client-Service
     client_service_session_key = generate_session_key(session_enctype)
@@ -303,7 +340,10 @@ def handle_tgs_request(request: dict, db_cursor) -> dict:
         "service_principal": service_principal_name,
         "encrypted_data": encrypted_tgs_rep,
         "service_ticket": encrypted_service_ticket,
-        "service_ticket_enctype": session_enctype,
+        "ticket_enctype": service_enctype,
+        "ticket_kvno": service_record["kvno"],
+        "service_ticket_enctype": service_enctype,
+        "service_ticket_kvno": service_record["kvno"],
         "enc_part_enctype": session_enctype,
     }
 
@@ -314,6 +354,14 @@ def _ticket_expired(ticket: dict, now: float) -> bool:
     except (TypeError, ValueError):
         return True
     return now > endtime
+
+
+def _ticket_not_yet_valid(ticket: dict, now: float) -> bool:
+    try:
+        starttime = float(ticket.get("starttime") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(starttime) and (now + MAX_CLOCK_SKEW) < starttime
 
 
 def _service_flags(tgt: dict) -> list[str]:

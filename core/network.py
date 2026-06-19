@@ -4,6 +4,7 @@ Frame format:
     [4 bytes: message length (big-endian)] + [N bytes: DER or JSON payload]
 """
 
+import base64
 import json
 import struct
 import socket
@@ -33,7 +34,7 @@ def receive_message(sock: socket.socket) -> dict:
         sock: The connected TCP socket.
 
     Returns:
-        The deserialized dictionary from the received JSON message.
+        The deserialized dictionary from the received message.
 
     Raises:
         ConnectionError: If the connection is closed unexpectedly.
@@ -57,7 +58,7 @@ def _serialize(data: dict) -> bytes:
     if WIRE_FORMAT == "der":
         return encode_message(data)
     if WIRE_FORMAT == "json":
-        return json.dumps(data).encode("utf-8")
+        return json.dumps(_to_jsonable(data)).encode("utf-8")
     raise ValueError(f"Unsupported KRB_WIRE_FORMAT: {WIRE_FORMAT}")
 
 
@@ -65,8 +66,28 @@ def _deserialize(payload: bytes) -> dict:
     if WIRE_FORMAT == "der":
         return decode_message(payload)
     if WIRE_FORMAT == "json":
-        return json.loads(payload.decode("utf-8"))
+        return _from_jsonable(json.loads(payload.decode("utf-8")))
     raise ValueError(f"Unsupported KRB_WIRE_FORMAT: {WIRE_FORMAT}")
+
+
+def _to_jsonable(value):
+    if isinstance(value, bytes):
+        return {"__bytes__": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, dict):
+        return {key: _to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_to_jsonable(item) for item in value]
+    return value
+
+
+def _from_jsonable(value):
+    if isinstance(value, dict):
+        if set(value) == {"__bytes__"}:
+            return base64.b64decode(value["__bytes__"].encode("ascii"))
+        return {key: _from_jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_from_jsonable(item) for item in value]
+    return value
 
 
 def _recv_exact(sock: socket.socket, num_bytes: int) -> bytes:

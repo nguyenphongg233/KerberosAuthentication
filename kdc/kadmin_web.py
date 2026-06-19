@@ -14,7 +14,14 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
-from kdc.database import connect, get_principal, upsert_principal, audit_event, DEFAULT_KEYTAB_PATH
+from kdc.database import (
+    DEFAULT_KEYTAB_PATH,
+    audit_event,
+    connect,
+    ensure_schema,
+    get_principal,
+    upsert_principal,
+)
 from core.messages import REALM
 from core.keytab import write_keytab
 from core.crypto import str_to_key
@@ -1043,6 +1050,11 @@ class KAdminWebHandler(BaseHTTPRequestHandler):
 
             conn = connect()
             try:
+                ensure_schema(conn)
+                if get_principal(conn.cursor(), principal_name, resolve_alias=False):
+                    self.send_json_response(409, {"error": f"Principal '{principal_name}' already exists"})
+                    return
+
                 # Add to DB
                 record = upsert_principal(
                     conn,

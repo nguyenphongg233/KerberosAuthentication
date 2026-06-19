@@ -1,6 +1,6 @@
 # Tham Chiếu Message
 
-Project gửi message qua TCP length-prefixed framing. Payload mặc định là ASN.1/DER theo các application tag và field chính của RFC 4120. Có thể bật JSON legacy bằng `KRB_WIRE_FORMAT=json` để debug, nhưng chế độ mặc định là `der`.
+Project gửi message qua TCP length-prefixed framing. Payload mặc định là ASN.1/DER theo các application tag và field chính của RFC 4120. Có thể bật JSON legacy bằng `KRB_WIRE_FORMAT=json` để debug; các field nhị phân được bọc Base64 trong JSON. Chế độ mặc định là `der`.
 
 ## TCP Frame
 
@@ -134,7 +134,9 @@ Internal view:
   "realm": "DEMO.LOCAL",
   "client_principal": "alice@DEMO.LOCAL",
   "encrypted_data": "bytes ciphertext",
-  "tgt": "bytes DER Ticket"
+  "tgt": "bytes ciphertext của Ticket enc-part",
+  "tgt_enctype": 18,
+  "tgt_kvno": 1
 }
 ```
 
@@ -167,6 +169,7 @@ Internal view sau khi decode:
   "service_principal": "fileserver/localhost@DEMO.LOCAL",
   "tgt": "bytes ciphertext của Ticket",
   "tgt_enctype": 18,
+  "tgt_kvno": 1,
   "authenticator": "bytes ciphertext của Authenticator",
   "authenticator_enctype": 18,
   "nonce": 987654321
@@ -192,7 +195,9 @@ Internal view sau khi decode:
   "client_principal": "alice@DEMO.LOCAL",
   "service_principal": "fileserver/localhost@DEMO.LOCAL",
   "encrypted_data": "bytes ciphertext",
-  "service_ticket": "bytes DER Ticket"
+  "service_ticket": "bytes ciphertext của Ticket enc-part",
+  "service_ticket_enctype": 18,
+  "service_ticket_kvno": 1
 }
 ```
 
@@ -230,9 +235,10 @@ Internal view sau khi decode:
 ```json
 {
   "msg_type": "AP_REQ",
-  "mutual_auth": true,
-  "ticket": "bytes ciphertext của Ticket",
+  "service_principal": "fileserver/localhost@DEMO.LOCAL",
+  "service_ticket": "bytes ciphertext của Ticket enc-part",
   "ticket_enctype": 18,
+  "ticket_kvno": 1,
   "authenticator": "bytes ciphertext của Authenticator",
   "authenticator_enctype": 18
 }
@@ -314,6 +320,7 @@ Project encode error bằng numeric code gần RFC:
 | `KDC_ERR_S_PRINCIPAL_UNKNOWN` | `7` |
 | `KDC_ERR_PREAUTH_FAILED` | `24` |
 | `KRB_AP_ERR_TKT_EXPIRED` | `32` |
+| `KRB_AP_ERR_TKT_NYV` | `33` |
 | `KRB_AP_ERR_REPEAT` | `34` |
 | `KRB_AP_ERR_SKEW` | `37` |
 | `KRB_AP_ERR_MODIFIED` | `41` |

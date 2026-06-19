@@ -117,7 +117,7 @@ Full Kerberos authentication completed successfully
 | `KDC_DB_PATH` | `kdc/database.db` | SQLite database của KDC |
 | `APP_SERVER_HOST` | `127.0.0.1` | Địa chỉ bind của Application Server và target của client |
 | `APP_SERVER_PORT` | `8000` | Port bind của Application Server và target của client |
-| `KRB_WIRE_FORMAT` | `der` | `der` dùng ASN.1/DER, `json` chỉ dùng khi debug legacy |
+| `KRB_WIRE_FORMAT` | `der` | `der` dùng ASN.1/DER, `json` chỉ dùng khi debug legacy với bytes được bọc Base64 |
 | `APP_SERVER_KEYTAB` | `app_server/<APP_SERVICE_NAME>.keytab` | File keytab Application Server đọc khi start |
 | `KRB5CCNAME` | `client/krb5cc_demo` | File credential cache của client |
 | `KRB_REPLAY_CACHE` | Giá trị `KDC_DB_PATH` | SQLite file chứa replay cache |
@@ -125,7 +125,7 @@ Full Kerberos authentication completed successfully
 
 Các biến liên quan realm, service, host và keytab phải nhất quán giữa KDC, Application Server và Client. Nếu đổi `KRB_REALM`, `APP_SERVICE_NAME` hoặc `APP_SERVER_NAME`, hãy set cùng giá trị ở cả ba terminal trước khi chạy.
 
-Mặc định hệ thống gửi message qua TCP bằng ASN.1/DER. Nếu cần debug bằng payload JSON cũ, set cùng biến ở cả ba terminal:
+Mặc định hệ thống gửi message qua TCP bằng ASN.1/DER. Nếu cần debug bằng payload JSON, set cùng biến ở cả ba terminal:
 
 ```powershell
 $env:KRB_WIRE_FORMAT = "json"
@@ -175,8 +175,8 @@ Client cho phép nhập `alice`; code sẽ chuẩn hóa thành `alice@DEMO.LOCAL
 | File | Tạo bởi | Nội dung |
 | --- | --- | --- |
 | `kdc/database.db` | KDC | Principal store, alias, audit log, replay cache |
-| `app_server/<APP_SERVICE_NAME>.keytab` | KDC | Service principal, kvno, enctype và long-term key của service |
-| `client/krb5cc_demo` | Client | TGT, service ticket, session key và metadata còn hiệu lực |
+| `app_server/<APP_SERVICE_NAME>.keytab` | KDC | Service principal, kvno, enctype và long-term key của service; có thể chứa nhiều kvno |
+| `client/krb5cc_demo` | Client | TGT, service ticket, session key và metadata còn hiệu lực theo định dạng MIT ccache v4 subset |
 
 Các file keytab và credential cache là artifact runtime của demo. Không nên commit chúng vào repository.
 
@@ -186,17 +186,30 @@ Các file keytab và credential cache là artifact runtime của demo. Không n�
 | --- | --- |
 | `principals` | Lưu principal, realm, salt, key, kvno, enctype, KDF metadata và trạng thái |
 | `principal_aliases` | Map alias ngắn sang canonical principal |
+| `principal_keys` | Lưu key history theo `principal`/`kvno`/`enctype` để hỗ trợ key rotation |
 | `audit_log` | Ghi sự kiện AS/TGS/KDC |
 | `replay_cache` | Lưu fingerprint authenticator đã dùng để chặn replay |
 
-KDC dùng upsert khi khởi tạo, nên principal mặc định sẽ được đồng bộ lại theo code hiện tại. Nếu muốn thay password hoặc principal theo cách nghiêm túc hơn, nên bổ sung admin CLI thay vì sửa trực tiếp SQLite.
+KDC chỉ tạo default principals khi chúng chưa tồn tại. Nếu đã đổi password/key bằng `kadmin cpw`, restart KDC sẽ không reset principal đó về password bootstrap trong code. Khi đổi key, current key nằm trong `principals`, còn các version cũ nằm trong `principal_keys` để TGT/service ticket cũ vẫn có thể được giải mã trong thời gian còn hạn.
 
 ## Kiểm Tra Nhanh
 
 Kiểm tra cú pháp:
 
 ```powershell
-python -m py_compile core\crypto.py core\principal.py core\keytab.py core\replay_cache.py core\messages.py core\asn1_codec.py core\network.py kdc\database.py kdc\as_handler.py kdc\tgs_handler.py kdc\kdc_server.py app_server\service_server.py client\credential_cache.py client\client_app.py
+python -m py_compile core\crypto.py core\principal.py core\keytab.py core\replay_cache.py core\messages.py core\asn1_codec.py core\network.py kdc\database.py kdc\as_handler.py kdc\tgs_handler.py kdc\kdc_server.py kdc\kadmin.py kdc\kadmin_web.py app_server\service_server.py client\credential_cache.py client\client_app.py scratch\test_cross_realm.py tests\test_kerberos_regression.py
+```
+
+Chạy regression tests in-process:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Chạy smoke test tích hợp HTTP/cross-realm bằng temp runtime:
+
+```powershell
+python scratch/test_cross_realm.py
 ```
 
 Kiểm tra port trên Windows:
@@ -230,7 +243,7 @@ Kỳ vọng:
 - TGS trả `TGS_REP`.
 - Service ticket được lưu trong credential cache.
 - Application Server trả `AP_REP`.
-- Client verify mutual authentication bằng `timestamp + 1`.
+- Client verify mutual authentication bằng `ctime/cusec` trong AP_REP trùng Authenticator đã gửi.
 
 ### 2. Sai Password
 
@@ -303,6 +316,15 @@ Kỳ vọng:
 - TGS hoặc Application Server trả `KRB_AP_ERR_TKT_EXPIRED`.
 - Client tự bỏ cache entry đã hết hạn ở lần đọc tiếp theo.
 
+### 9. Ticket Chưa Có Hiệu Lực
+
+Tạo hoặc chỉnh test để service ticket/TGT có `starttime` nằm xa hơn `MAX_CLOCK_SKEW` so với thời gian hiện tại.
+
+Kỳ vọng:
+
+- TGS hoặc Application Server trả `KRB_AP_ERR_TKT_NYV`.
+- Ticket không được dùng trước thời gian hiệu lực.
+
 ## Troubleshooting
 
 ### Application Server báo không đọc được keytab
@@ -354,20 +376,35 @@ Nguyên nhân:
 
 Đây là hành vi đúng. Nếu đang test lại từ đầu và muốn xóa trạng thái demo, dừng server rồi xóa cache runtime tương ứng.
 
+### `KRB_AP_ERR_TKT_NYV`
+
+Nguyên nhân:
+
+- Ticket có `starttime` nằm trong tương lai quá cửa sổ `MAX_CLOCK_SKEW`.
+- Đồng hồ hệ điều hành bị lùi nhiều so với lúc KDC cấp ticket.
+
+Cách xử lý:
+
+1. Đồng bộ thời gian hệ điều hành.
+2. Lấy ticket mới bằng cách chạy lại AS/TGS Exchange.
+3. Nếu đang test thủ công, chỉnh `starttime` về gần thời gian hiện tại.
+
 ### `KRB_AP_ERR_MODIFIED`
 
 Nguyên nhân thường gặp:
 
 - Ticket bị sửa hoặc decrypt bằng sai key.
 - Service ticket không dành cho service đang chạy.
-- Keytab không khớp key service trong KDC DB.
+- Keytab không có entry khớp `principal`, `kvno` hoặc `enctype` trong outer ticket.
 - Authenticator không khớp client principal trong ticket.
 
 Cách xử lý:
 
 1. Start KDC để export lại keytab.
-2. Start lại Application Server để đọc keytab mới.
+2. Gửi lại AP request; Application Server đọc keytab khi xử lý request. Chỉ cần restart Application Server nếu đổi `APP_SERVER_KEYTAB` hoặc biến cấu hình service.
 3. Xóa credential cache cũ nếu đã đổi realm, service host hoặc key.
+
+Keytab hiện lưu entry theo `principal`/`kvno`/`enctype`; Application Server ưu tiên exact `kvno` từ `Ticket.enc-part`. Nếu vừa đổi password service bằng `kadmin cpw`, hãy export keytab mới bằng `kadmin.py ktadd --all-versions` và lấy service ticket mới. KDC DB lưu key history trong bảng `principal_keys` để TGT cũ còn hạn vẫn có thể được giải mã theo `kvno`.
 
 ### Client dùng ticket cũ ngoài ý muốn
 
@@ -384,14 +421,16 @@ python -m client.client_app
 
 ## Runbook Demo
 
-1. Mở terminal KDC và chạy `python -m kdc.kdc_server`.
-2. Mở terminal Application Server và chạy `python -m app_server.service_server`.
-3. Mở terminal Client và chạy `python -m client.client_app`.
-4. Đăng nhập bằng `alice/alice_password`.
-5. Ghi lại ba pha thành công: AS, TGS, AP.
-6. Chạy lại client với `alice/wrong_password`.
-7. Ghi lại lỗi `KDC_ERR_PREAUTH_FAILED`.
-8. Nếu cần trình bày replay, gửi lại cùng authenticator và ghi lại `KRB_AP_ERR_REPEAT`.
+1. Chạy `python -m unittest discover -s tests -p "test_*.py" -v` để chứng minh các case bảo mật: sai password, replay, kvno/key rotation, keytab và ccache.
+2. Chạy `python scratch/test_cross_realm.py` để chứng minh luồng tích hợp có KDC socket, Application Server HTTP và cross-realm.
+3. Mở terminal KDC và chạy `python -m kdc.kdc_server`.
+4. Mở terminal Application Server và chạy `python -m app_server.service_server`.
+5. Mở terminal Client và chạy `python -m client.client_app`.
+6. Đăng nhập bằng `alice/alice_password`.
+7. Ghi lại ba pha thành công: AS, TGS, AP.
+8. Chạy lại client với `alice/wrong_password`.
+9. Ghi lại lỗi `KDC_ERR_PREAUTH_FAILED`.
+10. Nếu cần trình bày replay, dùng regression test `test_tgs_rejects_replayed_authenticator` thay vì thao tác thủ công khó lặp lại.
 
 ## Dừng Process
 

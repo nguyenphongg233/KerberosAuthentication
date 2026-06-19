@@ -17,7 +17,15 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from kdc.database import connect, upsert_principal, get_principal, resolve_principal, audit_event
+from kdc.database import (
+    audit_event,
+    connect,
+    ensure_schema,
+    get_principal,
+    list_principal_keys,
+    resolve_principal,
+    upsert_principal,
+)
 from core.keytab import write_keytab
 from core.messages import REALM
 
@@ -25,6 +33,7 @@ from core.messages import REALM
 def cmd_add(args):
     conn = connect()
     try:
+        ensure_schema(conn)
         cursor = conn.cursor()
         existing = get_principal(cursor, args.principal, resolve_alias=False)
         if existing:
@@ -41,6 +50,7 @@ def cmd_add(args):
 def cmd_cpw(args):
     conn = connect()
     try:
+        ensure_schema(conn)
         cursor = conn.cursor()
         resolved = resolve_principal(cursor, args.principal)
         if not resolved:
@@ -50,7 +60,14 @@ def cmd_cpw(args):
         existing = get_principal(cursor, resolved, resolve_alias=False)
         new_kvno = existing["kvno"] + 1
 
-        record = upsert_principal(conn, resolved, args.password, existing["principal_type"], kvno=new_kvno)
+        record = upsert_principal(
+            conn,
+            resolved,
+            args.password,
+            existing["principal_type"],
+            kvno=new_kvno,
+            groups=existing.get("groups", "[]"),
+        )
         conn.commit()
         print(f"Success: Password changed for '{resolved}'. Key version bumped to kvno {new_kvno}.")
     finally:
@@ -60,6 +77,7 @@ def cmd_cpw(args):
 def cmd_delete(args):
     conn = connect()
     try:
+        ensure_schema(conn)
         cursor = conn.cursor()
         resolved = resolve_principal(cursor, args.principal)
         if not resolved:
@@ -79,6 +97,7 @@ def cmd_delete(args):
 def cmd_list(args):
     conn = connect()
     try:
+        ensure_schema(conn)
         cursor = conn.cursor()
         cursor.execute("SELECT principal_name, principal_type, kvno, enctype, disabled FROM principals")
         rows = cursor.fetchall()
@@ -101,6 +120,7 @@ def cmd_list(args):
 def cmd_ktadd(args):
     conn = connect()
     try:
+        ensure_schema(conn)
         cursor = conn.cursor()
         resolved = resolve_principal(cursor, args.principal)
         if not resolved:
@@ -111,16 +131,27 @@ def cmd_ktadd(args):
         if record["principal_type"] != "service":
             print(f"Warning: Principal '{resolved}' is type '{record['principal_type']}' (usually only services are exported to keytabs).")
 
-        # Export keytab
-        write_keytab(
-            args.keytab,
-            record["principal_name"],
-            record["key"],
-            record["kvno"],
-            record["enctype"],
-            record["realm"],
+        if args.all_versions:
+            key_records = list_principal_keys(cursor, resolved, resolve_alias=False)
+            if not key_records:
+                key_records = [record]
+        else:
+            key_records = [record]
+
+        for key_record in key_records:
+            write_keytab(
+                args.keytab,
+                record["principal_name"],
+                key_record["key"],
+                key_record["kvno"],
+                key_record["enctype"],
+                record["realm"],
+            )
+        version_count = len(key_records)
+        print(
+            f"Success: Exported {version_count} key version(s) for "
+            f"'{record['principal_name']}' to keytab: {args.keytab}"
         )
-        print(f"Success: Keys for '{record['principal_name']}' successfully exported to keytab: {args.keytab}")
     finally:
         conn.close()
 
@@ -154,7 +185,12 @@ def main():
     # ktadd
     p_kt = subparsers.add_parser("ktadd", help="Export a service principal key to a keytab file.")
     p_kt.add_argument("principal", help="Service principal name.")
-    p_kt.add_argument("-k", "--keytab", required=True, help="Destination keytab JSON path.")
+    p_kt.add_argument("-k", "--keytab", required=True, help="Destination MIT keytab path.")
+    p_kt.add_argument(
+        "--all-versions",
+        action="store_true",
+        help="Export all stored kvno versions for this principal.",
+    )
     p_kt.set_defaults(func=cmd_ktadd)
 
     args = parser.parse_args()

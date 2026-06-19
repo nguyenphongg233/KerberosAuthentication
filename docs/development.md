@@ -119,6 +119,30 @@ Cần cập nhật:
 
 Project hiện chưa có test suite chính thức. Cấu trúc đề xuất:
 
+Test regression hiện có:
+
+```text
+tests/
+  test_kerberos_regression.py
+```
+
+Chạy bằng:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Các case hiện được kiểm:
+
+- Wrong password bị AS trả `KDC_ERR_PREAUTH_FAILED`.
+- Unknown principal bị AS trả `KDC_ERR_C_PRINCIPAL_UNKNOWN`.
+- Replayed TGS authenticator bị `KRB_AP_ERR_REPEAT`.
+- TGT cũ vẫn dùng được sau khi rotate TGS key nhờ `principal_keys` và `kvno`.
+- Keytab chọn exact `kvno` và fallback về highest `kvno`.
+- Ccache reload vẫn giữ `ticket_kvno`/`ticket_enctype`.
+
+Các test nên tách thêm khi mở rộng:
+
 ```text
 tests/
   test_crypto.py
@@ -159,9 +183,9 @@ tests/
 ### Test database
 
 - `ensure_schema` tạo đủ bảng.
-- `init_database` upsert principal mặc định.
+- `init_database` chỉ tạo principal mặc định nếu chưa tồn tại, không reset kvno/key đã đổi bằng `kadmin`.
 - `get_principal` resolve được alias.
-- Service keytab được ghi đúng principal, kvno và enctype.
+- Service keytab được ghi đúng principal, kvno và enctype; khi có nhiều entry, `load_keytab()` phải chọn exact `kvno` nếu request cung cấp và chọn kvno cao nhất nếu không có `kvno`.
 - `audit_event` ghi được event.
 
 ### Test AS handler
@@ -178,6 +202,7 @@ tests/
 
 - Valid TGT + authenticator -> `TGS_REP`.
 - Tampered TGT -> `KRB_AP_ERR_MODIFIED`.
+- TGT chưa tới `starttime` -> `KRB_AP_ERR_TKT_NYV`.
 - Expired TGT -> `KRB_AP_ERR_TKT_EXPIRED`.
 - Authenticator principal mismatch -> `KRB_AP_ERR_MODIFIED`.
 - Replayed authenticator -> `KRB_AP_ERR_REPEAT`.
@@ -189,9 +214,10 @@ tests/
 - Valid `AP_REQ` -> `AP_REP`.
 - Tampered service ticket -> `KRB_AP_ERR_MODIFIED`.
 - Ticket for different service -> `KRB_AP_ERR_MODIFIED`.
+- Ticket chưa tới `starttime` -> `KRB_AP_ERR_TKT_NYV`.
 - Expired ticket -> `KRB_AP_ERR_TKT_EXPIRED`.
 - Authenticator replay -> `KRB_AP_ERR_REPEAT`.
-- AP_REP timestamp bằng request timestamp + 1.
+- AP_REP giữ lại `ctime/cusec` của Authenticator gốc theo `EncAPRepPart`.
 
 ### End-to-End Test
 
@@ -321,7 +347,7 @@ Kerberos chỉ xác thực danh tính. Application Server hiện chưa có autho
 - Sai password fail ở AS.
 - Wrong service principal fail ở AP.
 - Replay authenticator fail ở TGS hoặc AP.
-- Ticket hết hạn bị từ chối.
+- Ticket chưa tới `starttime` và ticket hết hạn bị từ chối.
 - `README.md` vẫn phản ánh đúng luồng chạy.
 - `docs/protocol.md` và `docs/message-reference.md` đã cập nhật.
 - `docs/security.md` đã cập nhật nếu có thay đổi bảo mật.

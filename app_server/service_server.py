@@ -1,9 +1,12 @@
 """
-service_server.py - Application Server (File Server mock) - RFC 4120 & RFC 4559 SPNEGO compliant.
+service_server.py - Application Server (File Server mock).
 
-Handles the Kerberos AP Exchange over HTTP SPNEGO:
+Handles the Kerberos AP Exchange over an HTTP Negotiate-style flow:
     GET / -> 401 Unauthorized + WWW-Authenticate: Negotiate
     GET / + Authorization: Negotiate <AP-REQ b64> -> 200 OK + WWW-Authenticate: Negotiate <AP-REP b64>
+
+This demo sends raw Kerberos AP-REQ/AP-REP DER tokens in the Negotiate
+headers. It does not implement the full GSS-API/SPNEGO token wrapping.
 """
 
 import os
@@ -47,6 +50,7 @@ from core.messages import (
     KRB_AP_ERR_REPEAT,
     KRB_AP_ERR_SKEW,
     KRB_AP_ERR_TKT_EXPIRED,
+    KRB_AP_ERR_TKT_NYV,
     MAX_CLOCK_SKEW,
     REALM,
 )
@@ -65,6 +69,14 @@ def _ticket_expired(ticket: dict, now: float) -> bool:
         return True
 
 
+def _ticket_not_yet_valid(ticket: dict, now: float) -> bool:
+    try:
+        starttime = float(ticket.get("starttime") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(starttime) and (now + MAX_CLOCK_SKEW) < starttime
+
+
 def _error(code: str, message: str) -> dict:
     return {
         "msg_type": ERROR,
@@ -73,8 +85,8 @@ def _error(code: str, message: str) -> dict:
     }
 
 
-class SPNEGORequestHandler(BaseHTTPRequestHandler):
-    """HTTP Request Handler that enforces SPNEGO (RFC 4559) Kerberos authentication."""
+class NegotiateRequestHandler(BaseHTTPRequestHandler):
+    """HTTP handler for the demo's Negotiate-style Kerberos authentication."""
 
     def log_message(self, format, *args):
         sys.stdout.write(f"[FileServer] HTTP {self.address_string()} - - [{self.log_date_time_string()}] {format % args}\n")
@@ -88,7 +100,7 @@ class SPNEGORequestHandler(BaseHTTPRequestHandler):
             self.send_header("WWW-Authenticate", "Negotiate")
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(b"<html><body><h1>401 Unauthorized</h1><p>SPNEGO Authentication required.</p></body></html>")
+            self.wfile.write(b"<html><body><h1>401 Unauthorized</h1><p>Negotiate authentication required.</p></body></html>")
             return
 
         # Phase 3b: Client sends AP-REQ encoded in base64
@@ -134,6 +146,7 @@ class SPNEGORequestHandler(BaseHTTPRequestHandler):
         encrypted_authenticator = request.get("authenticator")
         
         ticket_enctype = request.get("ticket_enctype", DEFAULT_ENCTYPE)
+        ticket_kvno = request.get("ticket_kvno")
 
         if not encrypted_service_ticket or not encrypted_authenticator:
             err_msg = _error(
@@ -151,7 +164,12 @@ class SPNEGORequestHandler(BaseHTTPRequestHandler):
 
         requested_service_princ = request.get("service_principal")
         try:
-            keytab_entry = load_keytab(KEYTAB_PATH, requested_service_princ)
+            keytab_entry = load_keytab(
+                KEYTAB_PATH,
+                requested_service_princ,
+                kvno=ticket_kvno,
+                enctype=ticket_enctype,
+            )
             current_service_key = str_to_key(keytab_entry["key"])
         except Exception as e:
             print(f"[FileServer] ERROR: Failed to load key from keytab for principal '{requested_service_princ}': {e}")
@@ -221,6 +239,21 @@ class SPNEGORequestHandler(BaseHTTPRequestHandler):
             return
 
         now = time.time()
+        if _ticket_not_yet_valid(service_ticket, now):
+            print("[FileServer] ERROR: Service ticket is not yet valid.")
+            err_msg = _error(
+                KRB_AP_ERR_TKT_NYV,
+                "Service ticket is not yet valid.",
+            )
+            err_der = encode_message(err_msg)
+            err_b64 = base64.b64encode(err_der).decode("utf-8")
+            self.send_response(403)
+            self.send_header("WWW-Authenticate", f"Negotiate {err_b64}")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"<html><body><h1>403 Forbidden</h1><p>Authentication failed: ticket not yet valid.</p></body></html>")
+            return
+
         if _ticket_expired(service_ticket, now):
             print("[FileServer] ERROR: Service ticket has expired.")
             err_msg = _error(
@@ -450,7 +483,7 @@ class SPNEGORequestHandler(BaseHTTPRequestHandler):
 <body>
     <div class="card">
         <h1>Kerberos Secured File Server</h1>
-        <div class="status">Authentication Status: SUCCESS (SPNEGO/Negotiate)</div>
+        <div class="status">Authentication Status: SUCCESS (Negotiate)</div>
         <p>You have successfully logged in using your Kerberos ticket.</p>
         <div class="msg">{welcome_msg}</div>
     </div>
@@ -467,7 +500,7 @@ def start_service_server():
               f"It will be loaded dynamically when requests arrive.")
 
     server_address = (APP_SERVER_HOST, APP_SERVER_PORT)
-    httpd = HTTPServer(server_address, SPNEGORequestHandler)
+    httpd = HTTPServer(server_address, NegotiateRequestHandler)
 
     print(f"\n{'='*60}")
     print("  Kerberos HTTP Application Server (File Server)")

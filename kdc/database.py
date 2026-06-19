@@ -7,7 +7,13 @@ import os
 import sqlite3
 import time
 
-from core.crypto import ENCTYPE, DEFAULT_KDF_ITERATIONS, derive_key, key_to_str
+from core.crypto import (
+    ENCTYPE,
+    ENCTYPE_TO_NAME,
+    DEFAULT_KDF_ITERATIONS,
+    derive_key,
+    key_to_str,
+)
 from core.keytab import write_keytab
 from core.messages import APP_SERVICE_NAME, APP_SERVICE_PRINCIPAL, REALM, TGS_PRINCIPAL
 from core.principal import principal_aliases, principal_realm, principal_salt, user_principal
@@ -85,19 +91,27 @@ def connect() -> sqlite3.Connection:
 
 
 def init_database() -> list[str]:
-    """Create/migrate the demo database and upsert default principals."""
+    """Create/migrate the demo database and register missing default principals."""
     conn = connect()
     try:
         ensure_schema(conn)
         registered = []
         for spec in DEFAULT_PRINCIPALS:
-            record = upsert_principal(
-                conn,
+            existing = get_principal(
+                conn.cursor(),
                 spec["principal_name"],
-                spec["password"],
-                spec["principal_type"],
-                groups=spec.get("groups", "[]"),
+                resolve_alias=False,
             )
+            if existing:
+                record = existing
+            else:
+                record = upsert_principal(
+                    conn,
+                    spec["principal_name"],
+                    spec["password"],
+                    spec["principal_type"],
+                    groups=spec.get("groups", "[]"),
+                )
             registered.append(record["principal_name"])
 
             if spec.get("principal_type") == "service":
@@ -171,6 +185,23 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS principal_keys (
+            principal_name TEXT NOT NULL,
+            kvno INTEGER NOT NULL,
+            enctype TEXT NOT NULL,
+            key TEXT NOT NULL,
+            salt TEXT DEFAULT '',
+            kdf TEXT DEFAULT 'pbkdf2-hmac-sha1',
+            iterations INTEGER DEFAULT 0,
+            created_at REAL DEFAULT 0,
+            retired_at REAL,
+            PRIMARY KEY (principal_name, kvno, enctype)
+        )
+        """
+    )
+    _backfill_principal_keys(cursor)
     conn.commit()
 
 
@@ -179,6 +210,30 @@ def _add_column_if_missing(cursor: sqlite3.Cursor, table: str, column: str,
     columns = {row[1] for row in cursor.execute(f"PRAGMA table_info({table})")}
     if column not in columns:
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _backfill_principal_keys(cursor: sqlite3.Cursor) -> None:
+    """Populate key history from legacy databases that only had current keys."""
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO principal_keys (
+            principal_name, kvno, enctype, key, salt, kdf, iterations,
+            created_at, retired_at
+        )
+        SELECT principal_name, kvno, enctype, key, salt, kdf, iterations,
+               CASE WHEN created_at IS NULL OR created_at = 0
+                    THEN strftime('%s', 'now')
+                    ELSE created_at
+               END,
+               NULL
+        FROM principals
+        WHERE key IS NOT NULL
+          AND key != ''
+          AND kvno IS NOT NULL
+          AND enctype IS NOT NULL
+          AND enctype != ''
+        """
+    )
 
 
 def upsert_principal(conn: sqlite3.Connection, principal_name: str, password: str,
@@ -191,6 +246,8 @@ def upsert_principal(conn: sqlite3.Connection, principal_name: str, password: st
 
     existing = get_principal(conn.cursor(), principal_name, resolve_alias=False)
     created_at = existing["created_at"] if existing else now
+    if existing and existing.get("key"):
+        _store_principal_key(conn, existing)
 
     conn.execute(
         """
@@ -240,9 +297,53 @@ def upsert_principal(conn: sqlite3.Connection, principal_name: str, password: st
         )
 
     record = get_principal(conn.cursor(), principal_name, resolve_alias=False)
+    if existing and int(existing["kvno"]) != int(record["kvno"]):
+        conn.execute(
+            """
+            UPDATE principal_keys
+            SET retired_at = COALESCE(retired_at, ?)
+            WHERE principal_name = ? AND kvno = ? AND enctype = ?
+            """,
+            (
+                now,
+                existing["principal_name"],
+                int(existing["kvno"]),
+                existing["enctype"],
+            ),
+        )
+    _store_principal_key(conn, record)
     audit_event(conn, "KDC", "principal_upserted", principal_name, "success",
                 {"principal_type": principal_type, "kvno": kvno})
     return record
+
+
+def _store_principal_key(conn_or_cursor, record: dict) -> None:
+    """Persist one principal key version in the key history table."""
+    conn_or_cursor.execute(
+        """
+        INSERT INTO principal_keys (
+            principal_name, kvno, enctype, key, salt, kdf, iterations,
+            created_at, retired_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(principal_name, kvno, enctype) DO UPDATE SET
+            key=excluded.key,
+            salt=excluded.salt,
+            kdf=excluded.kdf,
+            iterations=excluded.iterations,
+            created_at=excluded.created_at,
+            retired_at=NULL
+        """,
+        (
+            record["principal_name"],
+            int(record["kvno"]),
+            record["enctype"],
+            record["key"],
+            record.get("salt", ""),
+            record.get("kdf", "pbkdf2-hmac-sha1"),
+            int(record.get("iterations") or DEFAULT_KDF_ITERATIONS),
+            float(record.get("updated_at") or record.get("created_at") or time.time()),
+        ),
+    )
 
 
 def resolve_principal(cursor: sqlite3.Cursor, name: str) -> str | None:
@@ -293,6 +394,86 @@ def get_principal(cursor: sqlite3.Cursor, name: str,
     if record["disabled"]:
         return None
     return record
+
+
+def get_principal_key(cursor: sqlite3.Cursor, name: str,
+                      kvno: int | None = None,
+                      enctype: str | int | None = None,
+                      resolve_alias: bool = True) -> dict | None:
+    """Return a principal key version.
+
+    Without ``kvno`` this returns the current principal record. With ``kvno``
+    it can return an older key from ``principal_keys`` so tickets issued before
+    key rotation remain decryptable until they expire.
+    """
+    current = get_principal(cursor, name, resolve_alias=resolve_alias)
+    if current is None:
+        return None
+    if kvno is None:
+        return current
+
+    requested_enctype = _normalize_enctype(enctype) if enctype is not None else None
+    params: list = [current["principal_name"], int(kvno)]
+    where = "principal_name = ? AND kvno = ?"
+    if requested_enctype:
+        where += " AND enctype = ?"
+        params.append(requested_enctype)
+
+    row = cursor.execute(
+        f"""
+        SELECT principal_name, kvno, enctype, key, salt, kdf, iterations,
+               created_at, retired_at
+        FROM principal_keys
+        WHERE {where}
+        ORDER BY retired_at IS NULL DESC, created_at DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    if row is None:
+        if int(current["kvno"]) == int(kvno):
+            if requested_enctype is None or current["enctype"] == requested_enctype:
+                return current
+        return None
+
+    columns = [
+        "principal_name", "kvno", "enctype", "key", "salt", "kdf",
+        "iterations", "created_at", "retired_at",
+    ]
+    key_record = dict(zip(columns, row))
+    result = dict(current)
+    result.update(key_record)
+    return result
+
+
+def list_principal_keys(cursor: sqlite3.Cursor, name: str,
+                        resolve_alias: bool = True) -> list[dict]:
+    """Return all stored key versions for a principal, newest first."""
+    current = get_principal(cursor, name, resolve_alias=resolve_alias)
+    if current is None:
+        return []
+
+    rows = cursor.execute(
+        """
+        SELECT principal_name, kvno, enctype, key, salt, kdf, iterations,
+               created_at, retired_at
+        FROM principal_keys
+        WHERE principal_name = ?
+        ORDER BY kvno DESC, created_at DESC
+        """,
+        (current["principal_name"],),
+    ).fetchall()
+    columns = [
+        "principal_name", "kvno", "enctype", "key", "salt", "kdf",
+        "iterations", "created_at", "retired_at",
+    ]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def _normalize_enctype(enctype: str | int) -> str:
+    if isinstance(enctype, int):
+        return ENCTYPE_TO_NAME.get(enctype, str(enctype))
+    return str(enctype)
 
 
 def audit_event(conn_or_cursor, component: str, event: str, principal: str | None,

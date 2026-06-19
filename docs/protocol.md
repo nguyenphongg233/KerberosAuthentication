@@ -35,7 +35,7 @@ Các message DER được định nghĩa trong `core/asn1_codec.py` theo applica
 | `AP-REP` | `[APPLICATION 15]` |
 | `KRB-ERROR` | `[APPLICATION 30]` |
 
-`KRB_WIRE_FORMAT=der` là mặc định. `KRB_WIRE_FORMAT=json` chỉ dùng khi cần debug legacy.
+`KRB_WIRE_FORMAT=der` là mặc định. `KRB_WIRE_FORMAT=json` chỉ dùng khi cần debug legacy; các field nhị phân được bọc Base64 trong JSON.
 
 ## Kênh Truyền Thông
 
@@ -57,7 +57,7 @@ Project bảo vệ dữ liệu Kerberos ở tầng payload, không bảo vệ to
 
 | Pha | Dữ liệu nhạy cảm trên wire | Khóa bảo vệ | Bên giải mã được |
 | --- | --- | --- | --- |
-| AS-REQ | Pre-authentication timestamp/principal | `Kc` | AS/KDC |
+| AS-REQ | Pre-authentication encrypted timestamp (`ctime/cusec`) | `Kc` | AS/KDC |
 | AS-REP | Client part chứa `Kc_tgs`, nonce và lifetime | `Kc` | Client biết password đúng |
 | AS-REP | TGT chứa `Kc_tgs` và thông tin client | `Ktgs` | TGS/KDC |
 | TGS-REQ | Authenticator của client | `Kc_tgs` | TGS/KDC |
@@ -96,9 +96,6 @@ Client tạo pre-authentication data:
 
 ```json
 {
-  "client_principal": "alice@DEMO.LOCAL",
-  "realm": "DEMO.LOCAL",
-  "timestamp": 1780770148.123,
   "ctime": 1780770148,
   "cusec": 123000
 }
@@ -127,28 +124,26 @@ AS kiểm tra:
 - Principal tồn tại trong DB.
 - `preauth` giải mã được bằng khóa của client `Kc`.
 - `ctime` trong preauth không bị lệch quá clock skew (5 phút).
-- `ctime` + `cusec` chưa tồn tại trong replay cache (chống replay).
+
+AS không dùng replay cache riêng cho PA-ENC-TIMESTAMP trong code hiện tại; replay protection được áp dụng ở TGS/AP qua authenticator cache.
 
 Nếu ok, AS sinh session key `Kc_tgs`.
 
 ### TGT (Ticket Granting Ticket)
 
-TGT plaintext trước khi mã hóa bằng `Ktgs`:
+TGT là ASN.1 `Ticket` có outer `sname = krbtgt/REALM@REALM`. Phần `EncTicketPart` trước khi mã hóa bằng `Ktgs`:
 
 ```json
 {
-  "ticket_type": "TGT",
   "realm": "DEMO.LOCAL",
   "client_principal": "alice@DEMO.LOCAL",
-  "server_principal": "krbtgt/DEMO.LOCAL@DEMO.LOCAL",
   "client_tgs_session_key": "Kc_tgs",
   "authtime": 1780770148.123,
   "starttime": 1780770148.123,
   "endtime": 1780770748.123,
   "renew_till": 1780773748.123,
   "flags": ["initial", "pre_authent", "renewable"],
-  "kvno": 1,
-  "enctype": 18
+  "authorization_data": [{"ad_type": 100, "ad_data": "[\"users\", \"admins\"]"}]
 }
 ```
 
@@ -162,7 +157,9 @@ Trên wire, message là `AS-REP ::= [APPLICATION 11] KDC-REP`, có `ticket` là 
   "realm": "DEMO.LOCAL",
   "client_principal": "alice@DEMO.LOCAL",
   "encrypted_data": "E_Kc(client_part)",
-  "tgt": "E_Ktgs(TGT)"
+  "tgt": "E_Ktgs(TGT)",
+  "tgt_enctype": 18,
+  "tgt_kvno": 1
 }
 ```
 
@@ -209,6 +206,8 @@ TGS_REQ ở góc nhìn logic. Trên wire, dữ liệu này được encode thàn
   "realm": "DEMO.LOCAL",
   "service_principal": "fileserver/localhost@DEMO.LOCAL",
   "tgt": "E_Ktgs(TGT)",
+  "tgt_enctype": 18,
+  "tgt_kvno": 1,
   "authenticator": "E_Kc_tgs(authenticator)",
   "nonce": 987654321
 }
@@ -220,9 +219,9 @@ TGS kiểm tra:
 
 - TGT giải mã được bằng `Ktgs`.
 - Realm trong request khớp realm KDC.
-- `server_principal` trong TGT là `krbtgt/DEMO.LOCAL@DEMO.LOCAL`.
+- TGT giải mã được bằng key của TGS principal trong outer ticket (`krbtgt/REALM@REALM` hoặc inter-realm TGT).
 - Realm trong TGT khớp realm KDC.
-- TGT chưa hết hạn.
+- TGT đã tới `starttime` và chưa hết hạn.
 - Authenticator giải mã được bằng `Kc_tgs`.
 - Principal trong authenticator khớp principal trong TGT.
 - Timestamp nằm trong clock skew.
@@ -231,21 +230,18 @@ TGS kiểm tra:
 
 ### Service Ticket
 
-Service ticket plaintext trước khi mã hóa bằng `Kservice`:
+Service ticket là ASN.1 `Ticket` có outer `sname = service/host@REALM`. Phần `EncTicketPart` trước khi mã hóa bằng `Kservice`:
 
 ```json
 {
-  "ticket_type": "SERVICE",
   "realm": "DEMO.LOCAL",
   "client_principal": "alice@DEMO.LOCAL",
-  "server_principal": "fileserver/localhost@DEMO.LOCAL",
   "client_service_session_key": "Kc_service",
   "authtime": 1780770148.123,
   "starttime": 1780770158.123,
   "endtime": 1780770748.123,
   "flags": ["pre_authent", "renewable"],
-  "kvno": 1,
-  "enctype": 18
+  "authorization_data": [{"ad_type": 100, "ad_data": "[\"users\", \"admins\"]"}]
 }
 ```
 
@@ -260,17 +256,19 @@ Trên wire, message là `TGS-REP ::= [APPLICATION 13] KDC-REP`.
   "client_principal": "alice@DEMO.LOCAL",
   "service_principal": "fileserver/localhost@DEMO.LOCAL",
   "encrypted_data": "E_Kc_tgs(client_part)",
-  "service_ticket": "E_Kservice(ST)"
+  "service_ticket": "E_Kservice(ST)",
+  "service_ticket_enctype": 18,
+  "service_ticket_kvno": 1
 }
 ```
 
 Client part chứa `Kc_service`, nonce, service principal, flags và thời gian hiệu lực. Service ticket luôn có `pre_authent`; nếu TGT có `renewable` hoặc `forwardable`, TGS giữ lại các flag tương ứng.
 
-## AP Exchange (Mô phỏng HTTP SPNEGO - RFC 4559)
+## AP Exchange (HTTP Negotiate-Style Demo)
 
-Pha AP Exchange không còn truyền nhận gói tin nhị phân qua TCP Socket thô. Thay vào đó, nó mô phỏng cơ chế GSS-API / SPNEGO qua HTTP.
+Pha AP Exchange không còn truyền nhận gói tin nhị phân qua TCP Socket thô. Thay vào đó, nó mô phỏng flow HTTP `Negotiate`: server gửi challenge `WWW-Authenticate: Negotiate`, client gửi `Authorization: Negotiate <token>`. Token trong project là raw Kerberos AP-REQ/AP-REP DER đã Base64, chưa phải token SPNEGO/GSS-API đầy đủ.
 
-### Bắt tay HTTP SPNEGO (Negotiate)
+### Bắt tay HTTP Negotiate
 
 1. **GET không xác thực**: Client gửi HTTP GET request ban đầu.
 2. **HTTP 401 Challenge**: Server phản hồi `401 Unauthorized` kèm header:
@@ -295,6 +293,8 @@ Cấu trúc logic của `AP-REQ` nhị phân (sau khi giải mã Base64 từ Neg
   "msg_type": "AP_REQ",
   "service_principal": "fileserver/localhost@DEMO.LOCAL",
   "service_ticket": "E_Kservice(ST)",
+  "ticket_enctype": 18,
+  "ticket_kvno": 1,
   "authenticator": "E_Kc_service(authenticator)"
 }
 ```
@@ -306,9 +306,9 @@ Authenticator tương tự TGS authenticator nhưng được mã hóa bằng `Kc
 Application Server giải mã Base64 token từ header `Authorization: Negotiate <token>`, chuyển thành gói tin DER và kiểm tra:
 
 - Service ticket giải mã được bằng key từ keytab.
-- `server_principal` trong ticket khớp principal của service.
-- Realm trong ticket khớp realm của service.
-- Ticket chưa hết hạn.
+- Outer service principal, `kvno` và `enctype` của AP-REQ khớp keytab entry cần dùng để giải mã ticket.
+- Realm/client realm trong ticket nằm trong danh sách realm được Application Server tin cậy.
+- Ticket đã tới `starttime` và chưa hết hạn.
 - Authenticator giải mã được bằng `Kc_service`.
 - Principal trong authenticator khớp ticket.
 - Timestamp nằm trong clock skew.
@@ -353,7 +353,7 @@ sequenceDiagram
     TGS-->>C: TGS_REP(E_Kc_tgs(Kc_service, nonce, times), ST)
     C->>C: Cache service ticket (ST)
 
-    Note over C,S: [AP Exchange via HTTP SPNEGO (RFC 4559)]
+    Note over C,S: [AP Exchange via HTTP Negotiate-style headers]
     C->>S: HTTP GET /
     S-->>C: HTTP 401 Unauthorized (WWW-Authenticate: Negotiate)
     C->>S: HTTP GET / (Authorization: Negotiate Base64(AP_REQ))
@@ -375,9 +375,10 @@ Trong quá trình xác thực dịch vụ (AP Exchange):
 - Khi vé TGT gần hết hạn hoặc đã hết hạn `endtime` (nhưng chưa quá hạn `renew-till`), Client gửi một yêu cầu `TGS-REQ` lên KDC với cờ `renew` trong `kdc-options` và đính kèm vé TGT cũ.
 - KDC kiểm tra tính hợp lệ của TGT (đặc biệt là `renew-till`), cấp lại một TGT mới có thời gian hiệu lực `endtime` được gia hạn thành công (cực trị là `renew-till`).
 
-### 3. Dữ liệu ủy quyền (Authorization Data - PAC / RBAC)
+### 3. Dữ liệu ủy quyền (Authorization Data / RBAC)
 - KDC lưu trữ thông tin nhóm/vai trò của người dùng trong cơ sở dữ liệu (cột `groups` của bảng `principals` dạng mảng JSON).
 - Khi cấp TGT hoặc Service Ticket, KDC trích xuất thông tin này và mã hóa nó vào trường `authorization-data` (tag 10) của vé dưới dạng cấu trúc ASN.1 `AuthorizationData`.
 - Tại **Application Server**, khi giải mã Service Ticket, Server trích xuất `authorization-data` và phân quyền dựa trên vai trò (RBAC).
   - Ví dụ: Tài khoản `alice@DEMO.LOCAL` thuộc nhóm `["users", "admins"]` được cấp quyền **Admin Access** để truy cập tài nguyên quản trị.
   - Tài khoản `bob@DEMO.LOCAL` chỉ thuộc nhóm `["users"]` chỉ được truy cập tài nguyên thường (**User Access**).
+- Đây là authorization-data demo phục vụ RBAC, chưa phải PAC Active Directory đầy đủ với chữ ký KDC/server.

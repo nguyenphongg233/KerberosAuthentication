@@ -30,6 +30,7 @@ KDC_ERR_WRONG_REALM = "KDC_ERR_WRONG_REALM"                   # Request is for a
 KRB_AP_ERR_MODIFIED = "KRB_AP_ERR_MODIFIED"                   # Ticket integrity error
 KRB_AP_ERR_SKEW = "KRB_AP_ERR_SKEW"                           # Clock skew too great
 KRB_AP_ERR_TKT_EXPIRED = "KRB_AP_ERR_TKT_EXPIRED"            # Ticket has expired
+KRB_AP_ERR_TKT_NYV = "KRB_AP_ERR_TKT_NYV"                    # Ticket not yet valid
 KRB_AP_ERR_REPEAT = "KRB_AP_ERR_REPEAT"                       # Replayed authenticator
 KRB_ERR_GENERIC = "KRB_ERR_GENERIC"                           # Generic processing error
 

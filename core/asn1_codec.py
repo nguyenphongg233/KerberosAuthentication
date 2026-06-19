@@ -28,6 +28,7 @@ from core.messages import (
     KRB_AP_ERR_REPEAT,
     KRB_AP_ERR_SKEW,
     KRB_AP_ERR_TKT_EXPIRED,
+    KRB_AP_ERR_TKT_NYV,
     KRB_ERR_GENERIC,
     REALM,
     TGS_REP,
@@ -62,6 +63,7 @@ ERROR_TO_CODE = {
     KDC_ERR_S_PRINCIPAL_UNKNOWN: 7,
     KDC_ERR_PREAUTH_FAILED: 24,
     KRB_AP_ERR_TKT_EXPIRED: 32,
+    KRB_AP_ERR_TKT_NYV: 33,
     KRB_AP_ERR_REPEAT: 34,
     KRB_AP_ERR_SKEW: 37,
     KRB_AP_ERR_MODIFIED: 41,
@@ -521,6 +523,7 @@ def _build_tgs_req(message: dict) -> TGSReq:
         ticket_principal=tgt_service,
         authenticator_cipher=message["authenticator"],
         ticket_enctype=message.get("tgt_enctype", 18),
+        ticket_kvno=message.get("tgt_kvno"),
         authenticator_enctype=message.get("authenticator_enctype", 18),
     )
     _append_padata(req, PA_TGS_REQ, encoder.encode(ap_req))
@@ -551,9 +554,15 @@ def _build_kdc_rep(message: dict, rep: KDCRep, msg_type: str) -> KDCRep:
     ticket_cipher = message.get("service_ticket") or message.get("tgt")
     
     ticket_enctype = message.get("ticket_enctype", 18)
+    ticket_kvno = (
+        message.get("ticket_kvno")
+        or message.get("tgt_kvno")
+        or message.get("service_ticket_kvno")
+    )
     enc_part_enctype = message.get("enc_part_enctype", 18)
 
-    _fill_ticket(ticket, ticket_cipher, ticket_principal, enctype=ticket_enctype)
+    _fill_ticket(ticket, ticket_cipher, ticket_principal,
+                 enctype=ticket_enctype, kvno=ticket_kvno)
     rep.setComponentByName("ticket", ticket)
 
     enc_part = rep.getComponentByName("enc-part")
@@ -566,9 +575,11 @@ def _build_ap_req(message: dict) -> APReq:
     req = APReq()
     service = message.get("service_principal") or service_principal("fileserver")
     ticket_enctype = message.get("ticket_enctype", 18)
+    ticket_kvno = message.get("ticket_kvno")
     authenticator_enctype = message.get("authenticator_enctype", 18)
     _fill_ap_req(req, message["service_ticket"], service, message["authenticator"],
-                 ticket_enctype=ticket_enctype, authenticator_enctype=authenticator_enctype)
+                 ticket_enctype=ticket_enctype, ticket_kvno=ticket_kvno,
+                 authenticator_enctype=authenticator_enctype)
     return req
 
 
@@ -639,27 +650,31 @@ def _fill_kdc_req_body(body: KDCReqBody, realm: str, nonce: int,
 
 def _fill_ap_req(req: APReq, ticket_cipher: bytes, ticket_principal: str,
                  authenticator_cipher: bytes, ticket_enctype: int = 18,
+                 ticket_kvno: int | None = None,
                  authenticator_enctype: int = 18) -> None:
     req.setComponentByName("pvno", PVNO)
     req.setComponentByName("msg-type", MSG_TYPE_NUMBERS[AP_REQ])
     req.setComponentByName("ap-options", _flags_to_bitstring([]))
     ticket = req.getComponentByName("ticket")
-    _fill_ticket(ticket, ticket_cipher, ticket_principal, enctype=ticket_enctype)
+    _fill_ticket(ticket, ticket_cipher, ticket_principal,
+                 enctype=ticket_enctype, kvno=ticket_kvno)
     req.setComponentByName("ticket", ticket)
     authenticator = req.getComponentByName("authenticator")
     _fill_encrypted_data(authenticator, authenticator_cipher, enctype=authenticator_enctype)
     req.setComponentByName("authenticator", authenticator)
 
 
-def _fill_ticket(ticket: Ticket, encrypted_ticket: bytes, server_princ: str, enctype: int = 18) -> None:
+def _fill_ticket(ticket: Ticket, encrypted_ticket: bytes, server_princ: str,
+                 enctype: int = 18, kvno: int | None = None) -> None:
     ticket.setComponentByName("tkt-vno", PVNO)
     ticket.setComponentByName("realm", principal_realm(server_princ, REALM))
     sname = ticket.getComponentByName("sname")
     _fill_principal(sname, server_princ)
     ticket.setComponentByName("sname", sname)
     enc_part = ticket.getComponentByName("enc-part")
-    _fill_encrypted_data(enc_part, encrypted_ticket, enctype=enctype, kvno=1)
+    _fill_encrypted_data(enc_part, encrypted_ticket, enctype=enctype, kvno=kvno)
     ticket.setComponentByName("enc-part", enc_part)
+
 
 def _fill_encrypted_data(target: EncryptedData, cipher_bytes: bytes,
                          enctype: int = 18, kvno: int | None = None) -> None:
@@ -712,6 +727,7 @@ def _parse_tgs_req(req: TGSReq) -> dict:
         
     ticket_val = ap_req.getComponentByName("ticket")
     auth_val = ap_req.getComponentByName("authenticator")
+    ticket_enc_part = ticket_val.getComponentByName("enc-part")
     
     return {
         "msg_type": TGS_REQ,
@@ -720,7 +736,8 @@ def _parse_tgs_req(req: TGSReq) -> dict:
         "nonce": int(body.getComponentByName("nonce")),
         "tgt": _ticket_cipher_bytes(ticket_val),
         "tgt_service_principal": _ticket_principal(ticket_val),
-        "tgt_enctype": int(ticket_val.getComponentByName("enc-part").getComponentByName("etype")),
+        "tgt_enctype": int(ticket_enc_part.getComponentByName("etype")),
+        "tgt_kvno": _encrypted_data_kvno(ticket_enc_part),
         "authenticator": _encrypted_data_cipher(auth_val),
         "authenticator_enctype": int(auth_val.getComponentByName("etype")),
         "kdc_options": _bitstring_to_flags(body.getComponentByName("kdc-options")),
@@ -730,6 +747,9 @@ def _parse_tgs_req(req: TGSReq) -> dict:
 def _parse_kdc_rep(rep: KDCRep, msg_type: str) -> dict:
     ticket = rep.getComponentByName("ticket")
     server_princ = _ticket_principal(ticket)
+    ticket_enc_part = ticket.getComponentByName("enc-part")
+    ticket_enctype = int(ticket_enc_part.getComponentByName("etype"))
+    ticket_kvno = _encrypted_data_kvno(ticket_enc_part)
     enc_part = rep.getComponentByName("enc-part")
     
     result = {
@@ -741,11 +761,13 @@ def _parse_kdc_rep(rep: KDCRep, msg_type: str) -> dict:
     }
     if msg_type == AS_REP:
         result["tgt"] = _ticket_cipher_bytes(ticket)
-        result["tgt_enctype"] = int(ticket.getComponentByName("enc-part").getComponentByName("etype"))
+        result["tgt_enctype"] = ticket_enctype
+        result["tgt_kvno"] = ticket_kvno
         result["server_principal"] = server_princ
     else:
         result["service_ticket"] = _ticket_cipher_bytes(ticket)
-        result["service_ticket_enctype"] = int(ticket.getComponentByName("enc-part").getComponentByName("etype"))
+        result["service_ticket_enctype"] = ticket_enctype
+        result["service_ticket_kvno"] = ticket_kvno
         result["service_principal"] = server_princ
     return result
 
@@ -753,11 +775,13 @@ def _parse_kdc_rep(rep: KDCRep, msg_type: str) -> dict:
 def _parse_ap_req(req: APReq) -> dict:
     ticket = req.getComponentByName("ticket")
     auth_val = req.getComponentByName("authenticator")
+    ticket_enc_part = ticket.getComponentByName("enc-part")
     return {
         "msg_type": AP_REQ,
         "service_principal": _ticket_principal(ticket),
         "service_ticket": _ticket_cipher_bytes(ticket),
-        "ticket_enctype": int(ticket.getComponentByName("enc-part").getComponentByName("etype")),
+        "ticket_enctype": int(ticket_enc_part.getComponentByName("etype")),
+        "ticket_kvno": _encrypted_data_kvno(ticket_enc_part),
         "authenticator": _encrypted_data_cipher(auth_val),
         "authenticator_enctype": int(auth_val.getComponentByName("etype")),
     }
@@ -820,6 +844,13 @@ def _decode_encrypted_data(payload: bytes) -> EncryptedData:
 
 def _encrypted_data_cipher(encrypted: EncryptedData) -> bytes:
     return bytes(encrypted.getComponentByName("cipher"))
+
+
+def _encrypted_data_kvno(encrypted: EncryptedData) -> int | None:
+    kvno = encrypted.getComponentByName("kvno")
+    if kvno.isValue:
+        return int(kvno)
+    return None
 
 
 def _ticket_cipher_bytes(ticket: Ticket) -> bytes:

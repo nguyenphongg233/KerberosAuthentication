@@ -50,35 +50,36 @@ def nfold(b: bytes, n: int) -> bytes:
     The n-fold algorithm as defined in RFC 3961.
     Expands a variable-length byte string to a target length of n bytes.
     """
-    in_len = len(b)
-    lcm = (in_len * n) // math.gcd(in_len, n)
-    replicated = b * (lcm // in_len)
-    
-    w = n * 8
-    total_sum = 0
-    num_chunks = lcm // n
-    
-    for i in range(num_chunks):
-        chunk_bytes = replicated[i * n : (i + 1) * n]
-        chunk_val = int.from_bytes(chunk_bytes, "big")
-        # Rotate right by 13 * i bits
-        rot_val = _rotate_right(chunk_val, 13 * i, w)
-        total_sum += rot_val
-        
-    # 1s complement addition fold
-    mod = (1 << w) - 1
-    folded = total_sum % mod
-    if folded == 0 and total_sum > 0:
-        folded = mod
-        
-    return folded.to_bytes(n, "big")
+    if not b:
+        raise ValueError("n-fold input must not be empty")
 
+    in_bits = len(b) * 8
+    out_bits = n * 8
+    lcm_bits = (in_bits * out_bits) // math.gcd(in_bits, out_bits)
 
-def _rotate_right(val: int, r: int, w: int) -> int:
-    r = r % w
-    if r == 0:
-        return val
-    return ((val >> r) | (val << (w - r))) & ((1 << w) - 1)
+    input_bits = []
+    for byte in b:
+        input_bits.extend((byte >> bit) & 1 for bit in range(7, -1, -1))
+
+    folded_bits = []
+    for repetition in range(lcm_bits // in_bits):
+        rotation = (13 * repetition) % in_bits
+        if rotation:
+            folded_bits.extend(input_bits[-rotation:] + input_bits[:-rotation])
+        else:
+            folded_bits.extend(input_bits)
+
+    mask = (1 << out_bits) - 1
+    total = 0
+    for offset in range(0, lcm_bits, out_bits):
+        chunk = 0
+        for bit in folded_bits[offset:offset + out_bits]:
+            chunk = (chunk << 1) | bit
+        total += chunk
+        total = (total & mask) + (total >> out_bits)
+    total = (total & mask) + (total >> out_bits)
+
+    return total.to_bytes(n, "big")
 
 
 def _encrypt_block_ecb(key: bytes, block: bytes) -> bytes:
@@ -134,78 +135,77 @@ def generate_session_key(enctype: int = DEFAULT_ENCTYPE) -> bytes:
 
 def _encrypt_aes_cts(key: bytes, plaintext: bytes, iv: bytes = b"\x00" * 16) -> bytes:
     L = len(plaintext)
-    if L < 16:
-        raise ValueError("Plaintext must be at least 16 bytes for CTS mode")
-        
-    if L == 16:
-        cipher = AES.new(key, AES.MODE_CBC, iv=iv)
-        return cipher.encrypt(plaintext)
-        
-    d = L % 16
-    if d == 0:
-        d = 16
-    n = (L - d) // 16 + 1
-    
-    if n > 2:
-        cbc_cipher = AES.new(key, AES.MODE_CBC, iv=iv)
-        c_blocks = cbc_cipher.encrypt(plaintext[:(n-2)*16])
-        last_c = c_blocks[-16:]
+    if L == 0:
+        raise ValueError("Plaintext must not be empty for CTS mode")
+
+    if L <= 16:
+        padded = plaintext + b"\x00" * (16 - L)
+        return AES.new(key, AES.MODE_CBC, iv=iv).encrypt(padded)
+
+    d = L % 16 or 16
+    n = (L + 15) // 16
+    prefix_len = (n - 2) * 16
+
+    if prefix_len:
+        c_prefix = AES.new(key, AES.MODE_CBC, iv=iv).encrypt(plaintext[:prefix_len])
+        prev_c = c_prefix[-16:]
     else:
-        c_blocks = b''
-        last_c = iv
-        
-    p_n_minus_1 = plaintext[(n-2)*16 : (n-1)*16]
-    p_n = plaintext[(n-1)*16 :]
-    
-    xor_n_minus_1 = bytes(a ^ b for a, b in zip(p_n_minus_1, last_c))
-    ecb_cipher = AES.new(key, AES.MODE_ECB)
-    c_prime = ecb_cipher.encrypt(xor_n_minus_1)
-    
-    c_n = c_prime[:d]
-    x_n = p_n + c_prime[d:]
-    
-    xor_n = bytes(a ^ b for a, b in zip(x_n, last_c))
-    c_n_minus_1 = ecb_cipher.encrypt(xor_n)
-    
-    return c_blocks + c_n_minus_1 + c_n
+        c_prefix = b""
+        prev_c = iv
+
+    ecb = AES.new(key, AES.MODE_ECB)
+    p_n_minus_1 = plaintext[prefix_len:prefix_len + 16]
+    p_n = plaintext[prefix_len + 16:]
+
+    c_n_minus_1 = ecb.encrypt(_xor_bytes(p_n_minus_1, prev_c))
+    if d == 16:
+        c_n = ecb.encrypt(_xor_bytes(p_n, c_n_minus_1))
+        return c_prefix + c_n + c_n_minus_1
+
+    padded_final = p_n + b"\x00" * (16 - d)
+    c_prime = ecb.encrypt(_xor_bytes(padded_final, c_n_minus_1))
+    return c_prefix + c_prime + c_n_minus_1[:d]
 
 
 def _decrypt_aes_cts(key: bytes, ciphertext: bytes, iv: bytes = b"\x00" * 16) -> bytes:
     L = len(ciphertext)
     if L < 16:
         raise ValueError("Ciphertext must be at least 16 bytes for CTS mode")
-        
+
     if L == 16:
-        cipher = AES.new(key, AES.MODE_CBC, iv=iv)
-        return cipher.decrypt(ciphertext)
-        
-    d = L % 16
-    if d == 0:
-        d = 16
-    n = (L - d) // 16 + 1
-    
-    if n > 2:
-        cbc_cipher = AES.new(key, AES.MODE_CBC, iv=iv)
-        p_blocks = cbc_cipher.decrypt(ciphertext[:(n-2)*16])
-        last_c = ciphertext[(n-3)*16 : (n-2)*16] if n > 2 else iv
+        return AES.new(key, AES.MODE_CBC, iv=iv).decrypt(ciphertext)
+
+    d = L % 16 or 16
+    n = (L + 15) // 16
+    prefix_len = (n - 2) * 16
+
+    if prefix_len:
+        c_prefix = ciphertext[:prefix_len]
+        p_prefix = AES.new(key, AES.MODE_CBC, iv=iv).decrypt(c_prefix)
+        prev_c = c_prefix[-16:]
     else:
-        p_blocks = b''
-        last_c = iv
-        
-    c_n_minus_1 = ciphertext[(n-2)*16 : (n-1)*16]
-    c_n = ciphertext[(n-1)*16 :]
-    
-    ecb_cipher = AES.new(key, AES.MODE_ECB)
-    dec_c_n_minus_1 = ecb_cipher.decrypt(c_n_minus_1)
-    
-    x_n = bytes(a ^ b for a, b in zip(dec_c_n_minus_1, last_c))
-    p_n = x_n[:d]
-    c_prime = c_n + x_n[d:]
-    
-    dec_c_prime = ecb_cipher.decrypt(c_prime)
-    p_n_minus_1 = bytes(a ^ b for a, b in zip(dec_c_prime, last_c))
-    
-    return p_blocks + p_n_minus_1 + p_n
+        p_prefix = b""
+        prev_c = iv
+
+    ecb = AES.new(key, AES.MODE_ECB)
+    if d == 16:
+        c_n = ciphertext[prefix_len:prefix_len + 16]
+        c_n_minus_1 = ciphertext[prefix_len + 16:prefix_len + 32]
+        p_n_minus_1 = _xor_bytes(ecb.decrypt(c_n_minus_1), prev_c)
+        p_n = _xor_bytes(ecb.decrypt(c_n), c_n_minus_1)
+        return p_prefix + p_n_minus_1 + p_n
+
+    c_prime = ciphertext[prefix_len:prefix_len + 16]
+    c_n = ciphertext[prefix_len + 16:]
+    decrypted_prime = ecb.decrypt(c_prime)
+    c_n_minus_1 = c_n + decrypted_prime[d:]
+    p_n = _xor_bytes(decrypted_prime[:d], c_n)
+    p_n_minus_1 = _xor_bytes(ecb.decrypt(c_n_minus_1), prev_c)
+    return p_prefix + p_n_minus_1 + p_n
+
+
+def _xor_bytes(left: bytes, right: bytes) -> bytes:
+    return bytes(a ^ b for a, b in zip(left, right))
 
 
 def calculate_checksum(ki: bytes, data: bytes) -> bytes:
@@ -224,22 +224,22 @@ def encrypt(data: bytes, key: bytes, usage: int) -> bytes:
         usage: Key usage integer.
         
     Returns:
-        Ciphertext prepended with confounder and appended with 12-byte MAC.
+        AES-CTS ciphertext of confounder + data, followed by a 12-byte MAC.
     """
     key_len = len(key)
     
-    constant_ke = usage.to_bytes(4, "big") + b"\x55"
-    constant_ki = usage.to_bytes(4, "big") + b"\x99"
+    constant_ke = usage.to_bytes(4, "big") + b"\xaa"
+    constant_ki = usage.to_bytes(4, "big") + b"\x55"
     
     ke = derive_random(key, constant_ke, key_len)
     ki = derive_random(key, constant_ki, key_len)
     
     confounder = os.urandom(16)
-    padded_plain = confounder + data
-    
-    ciphertext = _encrypt_aes_cts(ke, padded_plain)
-    
-    mac = calculate_checksum(ki, ciphertext)
+    plaintext = confounder + data
+
+    ciphertext = _encrypt_aes_cts(ke, plaintext)
+
+    mac = calculate_checksum(ki, plaintext)
     return ciphertext + mac
 
 
@@ -262,8 +262,8 @@ def decrypt(encrypted_data: bytes, key: bytes, usage: int) -> bytes:
     if len(encrypted_data) < 28:
         raise InvalidToken("Encrypted data too short.")
         
-    constant_ke = usage.to_bytes(4, "big") + b"\x55"
-    constant_ki = usage.to_bytes(4, "big") + b"\x99"
+    constant_ke = usage.to_bytes(4, "big") + b"\xaa"
+    constant_ki = usage.to_bytes(4, "big") + b"\x55"
     
     ke = derive_random(key, constant_ke, key_len)
     ki = derive_random(key, constant_ki, key_len)
@@ -271,15 +271,15 @@ def decrypt(encrypted_data: bytes, key: bytes, usage: int) -> bytes:
     ciphertext = encrypted_data[:-12]
     mac = encrypted_data[-12:]
     
-    expected_mac = calculate_checksum(ki, ciphertext)
-    if not hmac.compare_digest(mac, expected_mac):
-        raise InvalidToken("Integrity verification failed (MAC mismatch).")
-        
     try:
         decrypted = _decrypt_aes_cts(ke, ciphertext)
     except Exception as e:
         raise InvalidToken(f"Decryption failed: {e}")
-        
+
+    expected_mac = calculate_checksum(ki, decrypted)
+    if not hmac.compare_digest(mac, expected_mac):
+        raise InvalidToken("Integrity verification failed (MAC mismatch).")
+
     return decrypted[16:]  # Strip confounder
 
 

@@ -19,6 +19,7 @@ from core.crypto import (
     KEY_USAGE_AS_REP_ENCPART,
     KEY_USAGE_TICKET,
     DEFAULT_ENCTYPE,
+    NAME_TO_ENCTYPE,
 )
 from core.asn1_codec import (
     decode_pa_enc_timestamp,
@@ -115,6 +116,7 @@ def handle_as_request(request: dict, db_cursor) -> dict:
         return _error(KRB_ERR_GENERIC, f"Internal error: TGS principal '{tgs_principal_name}' not found.")
 
     tgs_master_key = str_to_key(tgs_record["key"])
+    tgs_enctype = NAME_TO_ENCTYPE.get(tgs_record["enctype"], preauth_enctype)
     
     # Generate session key for Client-TGS
     client_tgs_session_key = generate_session_key(preauth_enctype)
@@ -197,7 +199,10 @@ def handle_as_request(request: dict, db_cursor) -> dict:
         "server_principal": tgs_principal_name,
         "encrypted_data": encrypted_as_rep,
         "tgt": encrypted_tgt,
-        "ticket_enctype": preauth_enctype,
+        "ticket_enctype": tgs_enctype,
+        "ticket_kvno": tgs_record["kvno"],
+        "tgt_enctype": tgs_enctype,
+        "tgt_kvno": tgs_record["kvno"],
         "enc_part_enctype": preauth_enctype,
     }
 

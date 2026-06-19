@@ -1,7 +1,8 @@
-"""MIT Credential Cache v4 binary format support for Kerberos tickets (ccache)."""
+"""MIT Credential Cache v4 subset support for Kerberos tickets (ccache)."""
 
 from __future__ import annotations
 
+import json
 import os
 import struct
 import time
@@ -12,6 +13,7 @@ DEFAULT_CACHE_PATH = os.getenv(
     "KRB5CCNAME",
     os.path.join(os.path.dirname(__file__), "krb5cc_demo"),
 )
+DEMO_METADATA_AUTHDATA_TYPE = 0x7FFF
 
 
 def _pack_principal(principal: str, default_realm: str = "DEMO.LOCAL") -> bytes:
@@ -59,7 +61,8 @@ def _unpack_principal(data: bytes, offset: int) -> tuple[str, int]:
 
 
 def _pack_credential(client: str, server: str, key_bytes: bytes, enctype_int: int,
-                     times: dict, ticket: bytes) -> bytes:
+                     times: dict, ticket: bytes,
+                     metadata: dict | None = None) -> bytes:
     """Pack a single credential record into MIT ccache binary format."""
     data = _pack_principal(client)
     data += _pack_principal(server)
@@ -84,8 +87,11 @@ def _pack_credential(client: str, server: str, key_bytes: bytes, enctype_int: in
     # addresses: count (4 bytes, 0)
     data += struct.pack('>I', 0)
     
-    # authdata: count (4 bytes, 0)
-    data += struct.pack('>I', 0)
+    authdata = _pack_demo_metadata(metadata or {})
+    data += struct.pack('>I', len(authdata))
+    for ad_type, ad_value in authdata:
+        data += struct.pack('>H', ad_type)
+        data += struct.pack('>I', len(ad_value)) + ad_value
     
     # ticket: 4 bytes length prefix + bytes
     data += struct.pack('>I', len(ticket)) + ticket
@@ -127,14 +133,20 @@ def _unpack_credential(data: bytes, offset: int) -> tuple[dict, int]:
         addr_len = struct.unpack_from('>I', data, offset)[0]
         offset += 4 + addr_len
         
-    # skip authdata
+    # authdata
+    authdata = []
     auth_count = struct.unpack_from('>I', data, offset)[0]
     offset += 4
     for _ in range(auth_count):
         ad_type = struct.unpack_from('>H', data, offset)[0]
         offset += 2
         ad_len = struct.unpack_from('>I', data, offset)[0]
-        offset += 4 + ad_len
+        offset += 4
+        authdata.append({
+            "ad_type": ad_type,
+            "ad_data": data[offset:offset+ad_len],
+        })
+        offset += ad_len
         
     # ticket
     tkt_len = struct.unpack_from('>I', data, offset)[0]
@@ -157,13 +169,15 @@ def _unpack_credential(data: bytes, offset: int) -> tuple[dict, int]:
             "endtime": endtime,
             "renew_till": renew_till
         },
-        "ticket": ticket
+        "ticket": ticket,
+        "ticket_flags": ticket_flags,
+        "authdata": authdata,
     }
     return cred, offset
 
 
 class CredentialCache:
-    """File-backed credential cache implementing standard MIT ccache v4 binary format."""
+    """File-backed credential cache implementing a MIT ccache v4 subset."""
 
     def __init__(self, path: str = DEFAULT_CACHE_PATH):
         self.path = path
@@ -194,6 +208,9 @@ class CredentialCache:
                 return None, None
         return self._tgt, self._client_tgs_session_key
 
+    def get_tgt_metadata(self) -> dict:
+        return dict(self._tgt_metadata)
+
     def store_service_ticket(self, service_principal: str,
                               service_ticket: bytes,
                               client_service_session_key: bytes,
@@ -214,6 +231,12 @@ class CredentialCache:
             self._save()
             return None, None
         return entry["ticket"], entry["session_key"]
+
+    def get_service_ticket_metadata(self, service_principal: str) -> dict:
+        entry = self._service_tickets.get(service_principal)
+        if not entry:
+            return {}
+        return dict(entry.get("metadata", {}))
 
     def clear(self):
         self._tgt = None
@@ -272,19 +295,22 @@ class CredentialCache:
                 if cred["server"].startswith("krbtgt/"):
                     self._tgt = cred["ticket"]
                     self._client_tgs_session_key = cred["key"]
-                    self._tgt_metadata = {
+                    self._tgt_metadata = _credential_metadata(cred, enctype_name)
+                    self._tgt_metadata.update({
                         "enctype": enctype_name,
+                        "ticket_enctype": cred["keytype"],
                         "authtime": cred["times"]["authtime"],
                         "starttime": cred["times"]["starttime"],
                         "endtime": cred["times"]["endtime"],
                         "renew_till": cred["times"]["renew_till"]
-                    }
+                    })
                 else:
                     self._service_tickets[cred["server"]] = {
                         "ticket": cred["ticket"],
                         "session_key": cred["key"],
-                        "metadata": {
+                        "metadata": _credential_metadata(cred, enctype_name) | {
                             "enctype": enctype_name,
+                            "ticket_enctype": cred["keytype"],
                             "authtime": cred["times"]["authtime"],
                             "starttime": cred["times"]["starttime"],
                             "endtime": cred["times"]["endtime"],
@@ -320,8 +346,7 @@ class CredentialCache:
             client_realm = principal_realm(default_p, REALM)
             tgs_princ = f"krbtgt/{client_realm}@{client_realm}"
             
-            from core.crypto import NAME_TO_ENCTYPE
-            enctype_int = NAME_TO_ENCTYPE.get(self._tgt_metadata.get("enctype"), 18)
+            enctype_int = _metadata_keytype(self._tgt_metadata)
             
             data += _pack_credential(
                 default_p,
@@ -329,13 +354,13 @@ class CredentialCache:
                 self._client_tgs_session_key,
                 enctype_int,
                 self._tgt_metadata,
-                self._tgt
+                self._tgt,
+                self._tgt_metadata,
             )
             
         # Save service tickets
         for service_principal, entry in self._service_tickets.items():
-            from core.crypto import NAME_TO_ENCTYPE
-            enctype_int = NAME_TO_ENCTYPE.get(entry["metadata"].get("enctype"), 18)
+            enctype_int = _metadata_keytype(entry["metadata"])
             
             data += _pack_credential(
                 default_p,
@@ -343,8 +368,69 @@ class CredentialCache:
                 entry["session_key"],
                 enctype_int,
                 entry["metadata"],
-                entry["ticket"]
+                entry["ticket"],
+                entry["metadata"],
             )
             
         with open(self.path, 'wb') as f:
             f.write(data)
+
+
+def _metadata_keytype(metadata: dict) -> int:
+    key_info = metadata.get("key")
+    if isinstance(key_info, dict) and key_info.get("keytype") is not None:
+        return int(key_info["keytype"])
+
+    enctype = metadata.get("enctype")
+    if isinstance(enctype, int):
+        return enctype
+    if isinstance(enctype, str):
+        from core.crypto import NAME_TO_ENCTYPE
+        return NAME_TO_ENCTYPE.get(enctype, 18)
+    return 18
+
+
+def _pack_demo_metadata(metadata: dict) -> list[tuple[int, bytes]]:
+    """Store demo-only metadata in a ccache authdata slot.
+
+    MIT ccache credentials do not expose the ticket kvno as a first-class field.
+    The encrypted ticket bytes are still stored in the normal ticket field; this
+    small extension keeps enough metadata for this demo client to rebuild outer
+    Ticket fields after a cache reload.
+    """
+    keys = [
+        "ticket_enctype",
+        "ticket_kvno",
+        "tgt_enctype",
+        "tgt_kvno",
+        "service_ticket_enctype",
+        "service_ticket_kvno",
+        "client_principal",
+        "server_principal",
+        "service_principal",
+    ]
+    payload = {key: metadata[key] for key in keys if metadata.get(key) is not None}
+    if not payload:
+        return []
+    return [
+        (
+            DEMO_METADATA_AUTHDATA_TYPE,
+            json.dumps(payload, sort_keys=True).encode("utf-8"),
+        )
+    ]
+
+
+def _credential_metadata(cred: dict, enctype_name: str) -> dict:
+    metadata = {}
+    for item in cred.get("authdata", []):
+        if item.get("ad_type") != DEMO_METADATA_AUTHDATA_TYPE:
+            continue
+        try:
+            decoded = json.loads(item["ad_data"].decode("utf-8"))
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+            continue
+        if isinstance(decoded, dict):
+            metadata.update(decoded)
+    metadata.setdefault("enctype", enctype_name)
+    metadata.setdefault("ticket_enctype", cred["keytype"])
+    return metadata

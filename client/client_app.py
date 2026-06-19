@@ -1,4 +1,4 @@
-"""Command-line Kerberos client application - RFC 4120 & RFC 4559 SPNEGO compliant."""
+"""Command-line Kerberos client application for the Kerberos demo."""
 
 import os
 import secrets
@@ -29,6 +29,7 @@ from core.crypto import (
     KEY_USAGE_AP_REQ_AUTH,
     KEY_USAGE_AP_REP_ENCPART,
     DEFAULT_ENCTYPE,
+    NAME_TO_ENCTYPE,
 )
 from core.asn1_codec import (
     encode_pa_enc_timestamp,
@@ -62,6 +63,50 @@ from core.replay_cache import current_kerberos_time
 
 cache = CredentialCache()
 client_principal_global = None
+
+
+def _ticket_enctype(metadata: dict, fallback: int = DEFAULT_ENCTYPE) -> int:
+    value = (
+        metadata.get("ticket_enctype")
+        or metadata.get("tgt_enctype")
+        or metadata.get("service_ticket_enctype")
+        or fallback
+    )
+    if isinstance(value, str):
+        return NAME_TO_ENCTYPE.get(value, fallback)
+    return int(value)
+
+
+def _ticket_kvno(metadata: dict) -> int | None:
+    value = (
+        metadata.get("ticket_kvno")
+        or metadata.get("tgt_kvno")
+        or metadata.get("service_ticket_kvno")
+    )
+    if value is None:
+        return None
+    return int(value)
+
+
+def _response_ticket_metadata(response: dict, decrypted_part: dict,
+                              prefix: str) -> dict:
+    metadata = dict(decrypted_part)
+    metadata["client_principal"] = response.get("client_principal")
+    metadata["server_principal"] = (
+        response.get("server_principal")
+        or response.get("service_principal")
+        or decrypted_part.get("service_principal")
+    )
+    metadata["service_principal"] = metadata["server_principal"]
+    metadata["ticket_enctype"] = response.get(
+        f"{prefix}_enctype",
+        response.get("ticket_enctype", DEFAULT_ENCTYPE),
+    )
+    metadata["ticket_kvno"] = response.get(
+        f"{prefix}_kvno",
+        response.get("ticket_kvno"),
+    )
+    return metadata
 
 
 def phase1_as_exchange(client_principal: str, password: str) -> bool:
@@ -118,7 +163,11 @@ def phase1_as_exchange(client_principal: str, password: str) -> bool:
         return False
 
     client_tgs_session_key = as_rep_data["key"]["keyvalue"]
-    cache.store_tgt(response["tgt"], client_tgs_session_key, as_rep_data)
+    cache.store_tgt(
+        response["tgt"],
+        client_tgs_session_key,
+        _response_ticket_metadata(response, as_rep_data, "tgt"),
+    )
 
     print("[Client] ✓ AS Exchange successful!")
     print("         TGT received and cached.")
@@ -138,6 +187,7 @@ def phase2_tgs_exchange(service_name: str) -> bool:
     if tgt is None:
         print("[Client] ERROR: No valid TGT in cache. Run Phase 1 first.")
         return False
+    tgt_metadata = cache.get_tgt_metadata()
 
     client_home_realm = principal_realm(client_principal_global, REALM)
 
@@ -173,7 +223,8 @@ def phase2_tgs_exchange(service_name: str) -> bool:
             "service_principal": cross_realm_tgs_princ,
             "tgt": tgt,
             "tgt_service_principal": f"krbtgt/{client_home_realm}@{client_home_realm}",
-            "tgt_enctype": DEFAULT_ENCTYPE,
+            "tgt_enctype": _ticket_enctype(tgt_metadata),
+            "tgt_kvno": _ticket_kvno(tgt_metadata),
             "authenticator": authenticator,
             "authenticator_enctype": DEFAULT_ENCTYPE,
             "nonce": request_nonce,
@@ -200,6 +251,11 @@ def phase2_tgs_exchange(service_name: str) -> bool:
 
         cross_realm_tgt = response["service_ticket"]
         cross_realm_session_key = tgs_rep_data["key"]["keyvalue"]
+        cross_realm_tgt_metadata = _response_ticket_metadata(
+            response,
+            tgs_rep_data,
+            "service_ticket",
+        )
         print("[Client] ✓ Cross-Realm TGT obtained successfully!")
 
         # Step 2: Use Cross-Realm TGT to request Service Ticket from remote KDC
@@ -221,7 +277,8 @@ def phase2_tgs_exchange(service_name: str) -> bool:
             "service_principal": requested_service,
             "tgt": cross_realm_tgt,
             "tgt_service_principal": cross_realm_tgs_princ,
-            "tgt_enctype": DEFAULT_ENCTYPE,
+            "tgt_enctype": _ticket_enctype(cross_realm_tgt_metadata),
+            "tgt_kvno": _ticket_kvno(cross_realm_tgt_metadata),
             "authenticator": authenticator2,
             "authenticator_enctype": DEFAULT_ENCTYPE,
             "nonce": request_nonce2,
@@ -253,7 +310,7 @@ def phase2_tgs_exchange(service_name: str) -> bool:
             requested_service,
             service_ticket,
             client_service_session_key,
-            tgs_rep_data2,
+            _response_ticket_metadata(response2, tgs_rep_data2, "service_ticket"),
         )
         print(f"[Client] ✓ Service Ticket for '{requested_service}' cached successfully via Cross-Realm Trust!")
         return True
@@ -277,7 +334,8 @@ def phase2_tgs_exchange(service_name: str) -> bool:
             "service_principal": requested_service,
             "tgt": tgt,
             "tgt_service_principal": f"krbtgt/{client_home_realm}@{client_home_realm}",
-            "tgt_enctype": DEFAULT_ENCTYPE,
+            "tgt_enctype": _ticket_enctype(tgt_metadata),
+            "tgt_kvno": _ticket_kvno(tgt_metadata),
             "authenticator": authenticator,
             "authenticator_enctype": DEFAULT_ENCTYPE,
             "nonce": request_nonce,
@@ -316,7 +374,7 @@ def phase2_tgs_exchange(service_name: str) -> bool:
             service_princ,
             service_ticket,
             client_service_session_key,
-            tgs_rep_data,
+            _response_ticket_metadata(response, tgs_rep_data, "service_ticket"),
         )
 
         print("[Client] ✓ TGS Exchange successful!")
@@ -337,6 +395,7 @@ def renew_tgt_exchange() -> bool:
     if tgt is None:
         print("[Client] ERROR: No TGT in cache to renew.")
         return False
+    tgt_metadata = cache.get_tgt_metadata()
 
     timestamp, ctime, cusec = current_kerberos_time()
     auth_der = encode_authenticator({
@@ -353,7 +412,8 @@ def renew_tgt_exchange() -> bool:
         "realm": REALM,
         "service_principal": TGS_PRINCIPAL,
         "tgt": tgt,
-        "tgt_enctype": DEFAULT_ENCTYPE,
+        "tgt_enctype": _ticket_enctype(tgt_metadata),
+        "tgt_kvno": _ticket_kvno(tgt_metadata),
         "authenticator": authenticator,
         "authenticator_enctype": DEFAULT_ENCTYPE,
         "nonce": request_nonce,
@@ -387,16 +447,20 @@ def renew_tgt_exchange() -> bool:
     new_tgs_session_key = tgs_rep_data["key"]["keyvalue"]
     new_tgt = response["service_ticket"]
 
-    cache.store_tgt(new_tgt, new_tgs_session_key, tgs_rep_data)
+    cache.store_tgt(
+        new_tgt,
+        new_tgs_session_key,
+        _response_ticket_metadata(response, tgs_rep_data, "service_ticket"),
+    )
     print("[Client] ✓ TGT renewed successfully!")
     print(f"         New ticket endtime: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(tgs_rep_data.get('endtime')))}")
     return True
 
 
 def phase3_ap_exchange(service_name: str) -> bool:
-    """Run AP Exchange and verify mutual authentication via HTTP SPNEGO (RFC 4559)."""
+    """Run AP Exchange and verify mutual authentication via HTTP Negotiate headers."""
     print(f"\n{'─'*50}")
-    print("  Phase 3: AP Exchange (Service Access via HTTP SPNEGO)")
+    print("  Phase 3: AP Exchange (Service Access via HTTP Negotiate)")
     print(f"{'─'*50}")
 
     service_princ = service_principal(service_name)
@@ -404,6 +468,7 @@ def phase3_ap_exchange(service_name: str) -> bool:
     if service_ticket is None:
         print("[Client] ERROR: No valid service ticket in cache. Run Phase 2 first.")
         return False
+    service_ticket_metadata = cache.get_service_ticket_metadata(service_princ)
 
     # 1. Send initial unauthenticated HTTP request to prompt Negotiate challenge
     url = f"http://{APP_SERVER_HOST}:{APP_SERVER_PORT}/"
@@ -448,7 +513,8 @@ def phase3_ap_exchange(service_name: str) -> bool:
         "msg_type": AP_REQ,
         "service_principal": service_princ,
         "service_ticket": service_ticket,
-        "ticket_enctype": DEFAULT_ENCTYPE,
+        "ticket_enctype": _ticket_enctype(service_ticket_metadata),
+        "ticket_kvno": _ticket_kvno(service_ticket_metadata),
         "authenticator": authenticator,
         "authenticator_enctype": DEFAULT_ENCTYPE,
     }

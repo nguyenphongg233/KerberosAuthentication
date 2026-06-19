@@ -96,7 +96,7 @@ Client -> KDC AS -> Client -> KDC TGS -> Client -> Application Server
   - KVNO.
   - Enctype.
   - Key.
-- Credential cache (định dạng nhị phân MIT ccache v4):
+- Credential cache (định dạng nhị phân MIT ccache v4 subset):
   - TGT.
   - Service ticket.
   - Session key.
@@ -107,7 +107,7 @@ Client -> KDC AS -> Client -> KDC TGS -> Client -> Application Server
 ### 6.1 AS Exchange
 
 - Client chuẩn hóa username thành principal.
-- Client dẫn xuất `Kc` bằng PBKDF2-HMAC-SHA256 với salt theo principal.
+- Client dẫn xuất `Kc` bằng PBKDF2-HMAC-SHA1 + DK với salt theo principal.
 - Client tạo pre-authentication data gồm principal, realm, timestamp, `ctime`, `cusec`.
 - Client encode outer `AS-REQ` bằng ASN.1/DER.
 - AS kiểm tra principal, decrypt pre-authentication data và kiểm clock skew.
@@ -136,11 +136,11 @@ Client -> KDC AS -> Client -> KDC TGS -> Client -> Application Server
 - Application Server decrypt service ticket bằng keytab key.
 - Server kiểm service principal, ticket lifetime, authenticator và replay cache.
 - Server trả AP_REP mã hóa bằng `Kc_service`.
-- Client kiểm `timestamp + 1` để xác nhận mutual authentication.
+- Client kiểm `ctime/cusec` trong AP_REP trùng Authenticator ban đầu để xác nhận mutual authentication.
 
 ## 7. Cơ Chế Mật Mã Và Bảo Vệ
 
-- PBKDF2-HMAC-SHA1 dẫn xuất khóa với 1000 iterations và derive-random DK theo RFC 3962.
+- PBKDF2-HMAC-SHA1 dẫn xuất khóa với 4096 iterations mặc định và derive-random DK theo RFC 3962.
 - Salt theo chuẩn `REALMusername`.
 - Session key ngẫu nhiên bằng `os.urandom(16)` hoặc `os.urandom(32)`.
 - Mã hóa đối xứng AES-CTS kết hợp checksum HMAC-SHA1-96 bảo vệ tính bảo mật và toàn vẹn của payload.
@@ -149,7 +149,7 @@ Client -> KDC AS -> Client -> KDC TGS -> Client -> Application Server
 - `ctime/cusec` trong authenticator.
 - Persistent replay cache bằng SQLite.
 - Keytab nhị phân MIT Keytab v2 cho service key.
-- Credential cache nhị phân MIT ccache v4 cho client.
+- Credential cache nhị phân MIT ccache v4 subset cho client.
 - Audit log trong KDC.
 
 ## 8. Đối Chiếu Với RFC 4120
@@ -195,6 +195,8 @@ Chưa triển khai:
   - TGS/AP trả `KRB_AP_ERR_REPEAT`.
 - Ticket hết hạn:
   - TGS/AP trả `KRB_AP_ERR_TKT_EXPIRED`.
+- Ticket chưa tới thời gian hiệu lực:
+  - TGS/AP trả `KRB_AP_ERR_TKT_NYV`.
 - Ticket sai service:
   - AP trả `KRB_AP_ERR_MODIFIED`.
 

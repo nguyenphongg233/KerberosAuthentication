@@ -1,6 +1,6 @@
 # KerberosAuthentication
 
-KerberosAuthentication là dự án Python mô phỏng giao thức xác thực Kerberos V5 dựa trên các khái niệm trong [RFC 4120](https://datatracker.ietf.org/doc/html/rfc4120). Dự án tự xây dựng các thành phần cốt lõi gồm Client, Key Distribution Center, Authentication Server, Ticket Granting Server và Application Server để minh họa rõ quy trình cấp vé, phân phốiDự án đã được nâng cấp đầy đủ để đáp ứng các tiêu chuẩn mã hóa và định dạng của Kerberos V5. Cả message ngoài (outer wire messages) và tất cả các payload mã hóa bên trong (inner encrypted structures như `EncTicketPart`, `EncKDCRepPart`, `Authenticator`, `EncAPRepPart`, `PaEncTimestamp`) đều được định nghĩa và tuần tự hóa bằng ASN.1/DER (sử dụng thư viện `pyasn1`). Việc mã hóa sử dụng các enctype chuẩn `aes256-cts-hmac-sha1-96` và `aes128-cts-hmac-sha1-96` với chế độ AES-CTS (Cipher Text Stealing) tự triển khai kết hợp checksum HMAC-SHA1-96, Key Usage và dẫn xuất khóa ($K_{enc}, K_{mac}$) theo RFC 3961/3962.
+KerberosAuthentication là dự án Python mô phỏng giao thức xác thực Kerberos V5 dựa trên các khái niệm trong [RFC 4120](https://datatracker.ietf.org/doc/html/rfc4120). Dự án tự xây dựng các thành phần cốt lõi gồm Client, Key Distribution Center, Authentication Server, Ticket Granting Server và Application Server để minh họa rõ quy trình cấp vé và phân phối khóa phiên. Cả message ngoài (outer wire messages) và các payload mã hóa bên trong (inner encrypted structures như `EncTicketPart`, `EncKDCRepPart`, `Authenticator`, `EncAPRepPart`, `PaEncTimestamp`) đều được định nghĩa và tuần tự hóa bằng ASN.1/DER (sử dụng thư viện `pyasn1`). Việc mã hóa sử dụng các enctype chuẩn `aes256-cts-hmac-sha1-96` và `aes128-cts-hmac-sha1-96` với chế độ AES-CTS (Cipher Text Stealing) tự triển khai kết hợp checksum HMAC-SHA1-96, Key Usage và dẫn xuất khóa (`Ke`, `Ki`) theo RFC 3961/3962.
 
 ## Mục Lục
 
@@ -27,6 +27,7 @@ KerberosAuthentication là dự án Python mô phỏng giao thức xác thực K
 | [docs/operations.md](docs/operations.md) | Cài đặt, chạy local, cấu hình, keytab, cache, troubleshooting và runbook |
 | [docs/security.md](docs/security.md) | Mô hình bảo mật, threat model, điểm đạt được và hạn chế còn lại |
 | [docs/development.md](docs/development.md) | Quy ước phát triển, test strategy và hướng mở rộng |
+| [docs/test-demo-strategy.md](docs/test-demo-strategy.md) | Chiến lược test/demo, regression cases, demo matrix và thứ tự trình bày |
 
 ## Mức Độ Tuân Theo RFC 4120 / RFC 3961 / RFC 3962
 
@@ -39,17 +40,17 @@ KerberosAuthentication là dự án Python mô phỏng giao thức xác thực K
   - Service: `fileserver/localhost@DEMO.LOCAL`.
 - AS Exchange với pre-authentication, nonce và AS_REP encrypted part.
 - TGS Exchange với TGT, authenticator, nonce và service ticket.
-- AP Exchange với service ticket, authenticator và AP_REP `timestamp + 1`.
+- AP Exchange với service ticket, authenticator và AP_REP chứa lại `ctime/cusec` của Authenticator theo cấu trúc `EncAPRepPart`.
 - Tuần tự hóa toàn bộ: Cả outer message và các payload mã hóa bên trong (`EncTicketPart`, `EncKDCRepPart`, `Authenticator`, `EncAPRepPart`, `PaEncTimestamp`) đều được định nghĩa và mã hóa dưới dạng cấu trúc ASN.1/DER.
-- Dẫn xuất khóa và mã hóa chuẩn Kerberos: Enctype `aes256-cts-hmac-sha1-96` và `aes128-cts-hmac-sha1-96`, mã hóa AES-CTS (Cipher Text Stealing), mã xác thực HMAC-SHA1-96, và Key Usage dẫn xuất khóa ($K_{enc}, K_{mac}$) theo RFC 3961/3962.
-- Ticket có `realm`, `client_principal`, `server_principal`, `authtime`, `starttime`, `endtime`, `renew_till`, `flags`, `kvno`, `enctype` và `authorization-data`.
+- Dẫn xuất khóa và mã hóa chuẩn Kerberos: Enctype `aes256-cts-hmac-sha1-96` và `aes128-cts-hmac-sha1-96`, mã hóa AES-CTS (Cipher Text Stealing), mã xác thực HMAC-SHA1-96, và Key Usage dẫn xuất khóa (`Ke`, `Ki`) theo RFC 3961/3962.
+- Ticket ASN.1 outer có `realm`, `sname`, `kvno`, `enctype`; `kvno` được lấy từ principal record trong KDC DB thay vì hard-code. Phần `EncTicketPart` có `client_principal`, session key, `authtime`, `starttime`, `endtime`, `renew_till`, `flags` và `authorization-data`.
 - Hỗ trợ cờ gia hạn vé (`renewable` flag) và quy trình **Gia hạn vé TGT (TGT Renewal)** bằng cách gửi `TGS-REQ` có cờ `renew` trong `kdc-options` với TGT đã hết hạn lên KDC.
-- Nhúng **Dữ liệu ủy quyền nhóm/vai trò (Authorization Data / PAC)** trong `EncTicketPart` để phân quyền dựa trên vai trò (RBAC) tại Application Server (File Server phân cấp quyền hiển thị cho `alice` [Admin] và `bob` [User]).
+- Nhúng **Dữ liệu ủy quyền nhóm/vai trò (Authorization Data / RBAC)** trong `EncTicketPart` để phân quyền dựa trên vai trò tại Application Server (File Server phân cấp quyền hiển thị cho `alice` [Admin] và `bob` [User]). Đây là authorization-data demo, không phải PAC Active Directory đầy đủ.
 - **Subkey & Sequence Number Handshake** trong AP Exchange: Client sinh khóa con `client_subkey` và số thứ tự khởi đầu `seq-number` gửi trong Authenticator, Server trả về khóa con và số thứ tự của mình trong `EncAPRepPart` để hoàn tất bắt tay.
-- Principal database có salt (`REALMusername`), PBKDF2 parameters, key version number (kvno) và principal aliases.
-- Công cụ quản trị KDC database: Tiện ích CLI `kadmin.py` hỗ trợ các lệnh `add`, `delete`, `cpw`, `list`, `ktadd` trực tiếp trên database.
+- Principal database có salt (`REALMusername`), PBKDF2 parameters, key version number (kvno), principal aliases và key history theo `principal`/`kvno`/`enctype`.
+- Công cụ quản trị KDC database: Tiện ích CLI `kadmin.py` hỗ trợ các lệnh `add`, `delete`, `cpw`, `list`, `ktadd`; `cpw` tăng `kvno`, còn `ktadd --all-versions` có thể export toàn bộ key versions ra keytab.
 - Định dạng nhị phân **MIT Keytab v2** lưu trữ thông tin các service principal và khóa của chúng.
-- Định dạng nhị phân **MIT ccache v4** lưu trữ thông tin credential cache an toàn cho client.
+- Định dạng nhị phân **MIT ccache v4 subset** lưu trữ credential cache cho client, kèm metadata extension riêng để giữ `ticket_kvno`/`ticket_enctype` sau khi reload cache.
 - Persistent replay cache trong SQLite.
 - Audit log trong SQLite.
 
@@ -68,8 +69,8 @@ Chưa mô phỏng đầy đủ:
 - Dùng session key riêng cho Client-TGS và Client-Service.
 - Dùng authenticator có `ctime/cusec` và timestamp để chống replay.
 - Dùng SQLite replay cache để phát hiện authenticator bị gửi lại.
-- Dùng keytab nhị phân **MIT Keytab v2** để Application Server lấy service key động.
-- Dùng credential cache nhị phân **MIT ccache v4** để lưu trữ vé và session key giữa các phiên chạy của client.
+- Dùng keytab nhị phân **MIT Keytab v2** để Application Server lấy service key động và chọn đúng entry theo `principal`/`kvno`/`enctype`.
+- Dùng credential cache nhị phân **MIT ccache v4 subset** để lưu trữ vé, session key và metadata ticket giữa các phiên chạy của client.
 - Dùng audit log để ghi các sự kiện chính của KDC.
 
 ## Công Nghệ Sử Dụng
@@ -82,9 +83,9 @@ Chưa mô phỏng đầy đủ:
 | TCP framing | 4-byte big-endian length prefix + DER payload |
 | Database | SQLite |
 | Mã hóa / Giải mã | AES-CTS (Cipher Text Stealing) + HMAC-SHA1-96 (`pycryptodome`) |
-| KDF | PBKDF2-HMAC-SHA1, 1000 iterations (chuẩn RFC 3962) |
+| KDF | PBKDF2-HMAC-SHA1, 4096 iterations mặc định theo RFC 3962 |
 | Keytab | Định dạng nhị phân MIT Keytab v2 |
-| Credential cache | Định dạng nhị phân MIT ccache v4 |
+| Credential cache | Định dạng nhị phân MIT ccache v4 subset |
 | Replay cache | SQLite table |
 | ASN.1/DER | `pyasn1` |
 | Concurrency | Thread cho từng connection |
@@ -109,7 +110,7 @@ Application Server: fileserver/localhost@DEMO.LOCAL
 Các module chính:
 
 - `client/client_app.py`: CLI client, thực hiện đủ ba pha Kerberos.
-- `client/credential_cache.py`: credential cache nhị phân chuẩn MIT ccache v4.
+- `client/credential_cache.py`: credential cache nhị phân MIT ccache v4 subset.
 - `kdc/kdc_server.py`: TCP server của KDC.
 - `kdc/database.py`: schema/migration, principal store, aliases, audit log, keytab export.
 - `kdc/as_handler.py`: AS Exchange.
@@ -152,7 +153,7 @@ python -m kdc.kdc_server
 KDC sẽ tự:
 
 - Migration `kdc/database.db`.
-- Upsert principal mặc định.
+- Tạo principal mặc định nếu chưa tồn tại, không ghi đè password/kvno đã đổi bằng `kadmin`.
 - Sinh keytab tại `app_server/<APP_SERVICE_NAME>.keytab`, mặc định là `app_server/fileserver.keytab`.
 
 Terminal 2:
@@ -204,7 +205,7 @@ Replay cache không lưu khóa; nó chỉ lưu fingerprint authenticator đã d�
 | --- | --- | --- |
 | Client ↔ KDC/AS | `AS-REQ`, `AS-REP`, `KRB-ERROR` qua `KDC_HOST:KDC_PORT` | Client xin TGT. |
 | Client ↔ KDC/TGS | `TGS-REQ`, `TGS-REP`, `KRB-ERROR` qua `KDC_HOST:KDC_PORT` | Client dùng TGT để xin service ticket. |
-| Client ↔ Application Server | `AP-REQ`, `AP-REP`, `KRB-ERROR` qua `APP_SERVER_HOST:APP_SERVER_PORT` | Client dùng service ticket để truy cập service. |
+| Client ↔ Application Server | HTTP `WWW-Authenticate`/`Authorization: Negotiate` chứa raw `AP-REQ`/`AP-REP` DER | Client dùng service ticket để truy cập service; chưa bọc token SPNEGO/GSS-API đầy đủ. |
 | AS ↔ TGS | Nội bộ trong process KDC | Không có socket riêng giữa AS và TGS trong demo. |
 | KDC ↔ Application Server | Không có TCP runtime trực tiếp | Trust dựa trên service key: KDC export keytab, Application Server đọc keytab. |
 
@@ -260,7 +261,7 @@ AS_REQ = {
   client_principal,
   realm,
   nonce,
-  preauth = E_Kc({ client_principal, realm, ctime, cusec })
+  preauth = E_Kc({ ctime, cusec })
 }
 ```
 
@@ -269,7 +270,7 @@ AS trả:
 ```text
 AS_REP = {
   encrypted_data = E_Kc({ Kc_tgs, nonce, flags, authtime, starttime, endtime, renew_till }),
-  tgt = E_Ktgs({ client_principal, server_principal=krbtgt/REALM@REALM, Kc_tgs, flags, times })
+  tgt = Ticket(sname=krbtgt/REALM@REALM, enc-part=E_Ktgs({ client_principal, Kc_tgs, flags, times, authorization_data }))
 }
 ```
 
@@ -289,7 +290,7 @@ TGS trả:
 ```text
 TGS_REP = {
   encrypted_data = E_Kc_tgs({ Kc_service, nonce, service_principal, flags, starttime, endtime }),
-  service_ticket = E_Kservice({ client_principal, server_principal, Kc_service, flags, times })
+  service_ticket = Ticket(sname=service_principal, enc-part=E_Kservice({ client_principal, Kc_service, flags, times, authorization_data }))
 }
 ```
 
@@ -305,13 +306,25 @@ AP_REQ = {
 Service trả:
 
 ```text
-AP_REP = E_Kc_service({ timestamp: client_timestamp + 1, service_data })
+AP_REP = E_Kc_service_or_subkey({ ctime, cusec, subkey, seq_number })
 ```
 
 ## Kiểm Tra Nhanh
 
 ```powershell
-python -m py_compile core\crypto.py core\principal.py core\keytab.py core\replay_cache.py core\messages.py core\asn1_codec.py core\network.py kdc\database.py kdc\as_handler.py kdc\tgs_handler.py kdc\kdc_server.py app_server\service_server.py client\credential_cache.py client\client_app.py
+python -m py_compile core\crypto.py core\principal.py core\keytab.py core\replay_cache.py core\messages.py core\asn1_codec.py core\network.py kdc\database.py kdc\as_handler.py kdc\tgs_handler.py kdc\kdc_server.py kdc\kadmin.py kdc\kadmin_web.py app_server\service_server.py client\credential_cache.py client\client_app.py scratch\test_cross_realm.py tests\test_kerberos_regression.py
+```
+
+Regression tests:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Smoke test an toàn, dùng temp runtime riêng:
+
+```powershell
+python scratch/test_cross_realm.py
 ```
 
 Kịch bản đúng:
@@ -330,12 +343,15 @@ password: wrong_password
 
 Kỳ vọng: AS trả `KDC_ERR_PREAUTH_FAILED`.
 
-## Giới Hạn Còn Lại
+## Giới Hạn Còn Lại (Những điểm chưa làm được)
 
-Dự án đã sát chuẩn hơn ở mức mô phỏng, nhưng vẫn chưa phải Kerberos production hoàn chỉnh do:
+Dự án hiện tại là một **bản mô phỏng học thuật**, do đó nó **chưa làm được** các yếu tố cần thiết để có thể kết nối hay tương thích trực tiếp với các client/server Kerberos thật:
 
-- Không tương thích trực tiếp ở mức giao thức truyền thông mạng socket TCP với các phần mềm chuẩn MIT Kerberos hoặc Windows Active Directory do sử dụng TCP framing tự định nghĩa đơn giản, chưa tích hợp đầy đủ các lớp API GSSAPI/SSPI.
-- Chưa implement đầy đủ các cờ và luồng chuyển tiếp vé (forward/delegate) phức tạp.
-- Chưa tích hợp mã hóa kênh truyền TLS/mTLS cho các socket TCP.
+- **Chưa tương thích giao thức mạng:** Không thể kết nối với `kinit` hay hệ điều hành thật do sử dụng TCP framing tự chế (length-prefixed) thay vì UDP/TCP tiêu chuẩn của RFC 4120.
+- **Chưa có cấu trúc PAC (Privilege Attribute Certificate) hoàn chỉnh:** Chỉ mô phỏng RBAC đơn giản, thiếu chữ ký số kép KDC/Server bảo vệ như Active Directory.
+- **Chưa phân giải KDC tự động:** Không sử dụng DNS (SRV records) mà phải cấu hình địa chỉ IP tĩnh.
+- **Chưa bảo mật OS Session cho Ccache/Keytab:** Việc lưu trữ file nhị phân trên ổ đĩa không được bọc bởi API hệ thống bảo vệ cấp thấp (như Windows LSA).
+- **Chưa hỗ trợ giao thức quản trị an toàn:** KAdmin dùng HTTP thô, không có mã hóa TLS hay kadmin RPC chuẩn.
+- **Chưa implement** đầy đủ các cờ vé nâng cao (Forwardable, PKINIT, FAST) và mã hóa kênh truyền TLS/mTLS cho socket TCP.
 
-Các giới hạn này và mô hình an toàn được phân tích chi tiết trong [docs/security.md](docs/security.md).
+Các hạn chế này được phân tích chi tiết trong [docs/security.md](docs/security.md).
