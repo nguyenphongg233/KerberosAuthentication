@@ -656,23 +656,41 @@ def main():
         print("Error: Username cannot be empty.")
         return
 
-    password = input("Enter password: ").strip()
-    if not password:
-        print("Error: Password cannot be empty.")
-        return
-
     client_principal_global = user_principal(username)
+    cached_tgt_principal = cache.get_tgt_metadata().get("client_principal")
+    can_reuse_tgt = cache.has_tgt()
 
-    if not phase1_as_exchange(client_principal_global, password):
-        print("\n[Client] Authentication failed. Exiting.")
-        return
+    if can_reuse_tgt and cached_tgt_principal:
+        print(f"[Client] Found valid cached TGT for {cached_tgt_principal}.")
+        print("[Client] Leave password empty to reuse cached credentials.")
+
+    password = input("Enter password: ").strip()
+    if password:
+        if not phase1_as_exchange(client_principal_global, password):
+            print("\n[Client] Authentication failed. Exiting.")
+            return
+    else:
+        if not can_reuse_tgt:
+            print("Error: Password is required because no valid cached TGT exists.")
+            return
+        if cached_tgt_principal and cached_tgt_principal != client_principal_global:
+            print(
+                "[Client] ERROR: Cached TGT belongs to "
+                f"{cached_tgt_principal}, not {client_principal_global}."
+            )
+            return
+        print("[Client] Reusing cached TGT. Skipping AS Exchange.")
 
     service_name = APP_SERVICE_NAME
-    print(f"\n[Client] Requesting access to service: '{service_principal(service_name)}'")
+    service_princ = service_principal(service_name)
+    print(f"\n[Client] Requesting access to service: '{service_princ}'")
 
-    if not phase2_tgs_exchange(service_name):
-        print("\n[Client] Failed to obtain service ticket. Exiting.")
-        return
+    if cache.has_service_ticket(service_princ):
+        print("[Client] Found valid cached service ticket. Skipping TGS Exchange.")
+    else:
+        if not phase2_tgs_exchange(service_name):
+            print("\n[Client] Failed to obtain service ticket. Exiting.")
+            return
 
     if not phase3_ap_exchange(service_name):
         print("\n[Client] Failed to access the service. Exiting.")

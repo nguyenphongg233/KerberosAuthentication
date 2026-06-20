@@ -98,7 +98,7 @@ DEMO.LOCALalice
 Giới hạn:
 
 - Project mới hỗ trợ string-to-key cho AES enctypes 17/18; chưa có negotiation đầy đủ của string-to-key parameters từ KDC như triển khai Kerberos production.
-- Không có password policy, account lockout hoặc rate limiting.
+- Chưa có password policy phức tạp; account lockout/rate limiting hiện ở mức demo cho AS pre-auth, cấu hình bằng `KRB_AUTH_FAILURE_THRESHOLD` và `KRB_AUTH_LOCKOUT_SECONDS`.
 - Salt deterministic để client tự derive key trước AS_REQ; môi trường production cần chính sách mạnh hơn.
 
 ## Ticket Và Session Key
@@ -233,7 +233,7 @@ Các kênh truyền trong project:
 | --- | --- | --- |
 | Client ↔ KDC/AS | `AS-REQ`, `AS-REP` | Pre-auth mã hóa bằng `Kc`; TGT mã hóa bằng `Ktgs`; client part mã hóa bằng `Kc`. |
 | Client ↔ KDC/TGS | `TGS-REQ`, `TGS-REP` | Authenticator mã hóa bằng `Kc_tgs`; service ticket mã hóa bằng `Kservice`; client part mã hóa bằng `Kc_tgs`. |
-| Client ↔ Application Server | `AP-REQ`, `AP-REP` | Service ticket mã hóa bằng `Kservice`; authenticator và AP-REP mã hóa bằng `Kc_service`. |
+| Client ↔ Application Server | `AP-REQ`, `AP-REP` | Service ticket mã hóa bằng `Kservice`; authenticator mã hóa bằng `Kc_service`; AP-REP mã hóa bằng `client_subkey` nếu Authenticator có subkey, nếu không dùng `Kc_service`. |
 | AS ↔ TGS | Nội bộ trong cùng KDC process | Không có kênh mạng riêng; hai handler dùng chung KDC DB. |
 | KDC ↔ Application Server | Không có kênh TCP runtime trực tiếp | Trust dựa trên service key trong KDC DB và keytab của Application Server. |
 
@@ -267,7 +267,7 @@ Dù dự án đã ứng dụng nhiều kỹ thuật tiên tiến, hệ thống n
 - **Chưa cô lập OS Session cho Ccache:** Dù định dạng file là chuẩn MIT v4, việc lưu file nhị phân trực tiếp trên đĩa mà không bảo vệ bởi các API hệ thống OS (như Windows LSA) làm tăng rủi ro đánh cắp vé.
 - **Chưa hỗ trợ giao thức quản trị Kadmin chuẩn:** Web Console quản trị sử dụng HTTP thô (cổng 8088), không được mã hóa TLS/mTLS hay dùng giao thức RPC an toàn như `kadmin` thật.
 - **Chưa hỗ trợ các tính năng vé nâng cao:** Các luồng uỷ quyền chuyển tiếp vé phức tạp (Forwardable/Proxiable) hay FAST/PKINIT đều chưa được cài đặt.
-- **Chưa tích hợp Secret Manager và Hardening:** Thiếu cơ chế tự động key rotation định kỳ, hard-lock file permission, hay cơ chế chống brute-force pre-auth (rate limiting/account lockout).
+- **Chưa tích hợp Secret Manager và Hardening production:** Thiếu cơ chế tự động key rotation định kỳ, hard-lock file permission và rate limiting/account lockout phân tán dùng chung cho nhiều KDC instance.
 
 ## Threat Model
 
@@ -307,8 +307,8 @@ Nếu làm đồng hồ lệch quá `MAX_CLOCK_SKEW`, attacker có thể gây l�
 ## Khuyến Nghị Nâng Cấp Tiếp
 
 1. Thêm permission hardening cho keytab và credential cache ở cấp hệ điều hành (đọc/ghi giới hạn cho process chạy dịch vụ/client).
-2. Thêm rate limiting cho AS pre-authentication failure tại KDC để hạn chế brute force password.
-3. Thêm test tự động kiểm tra replay, tampering, expiration, wrong realm và wrong service.
+2. Mở rộng rate limiting/account lockout sang backend dùng chung nếu chạy nhiều KDC instance.
+3. Mở rộng test tự động cho wrong realm, PAC/authorization data và các case multi-instance.
 4. Thêm audit log chi tiết cho Application Server.
 5. Tách replay cache sang các hệ quản trị database phân tán hoặc Redis dùng chung hiệu năng cao hơn nếu mở rộng nhiều instance KDC.
 

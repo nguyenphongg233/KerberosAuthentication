@@ -26,7 +26,7 @@ Project đã mô phỏng các Kerberos encryption types chuẩn bao gồm `aes25
 Client CLI
   | AS_REQ / AS_REP
   v
-  KDC Server (Ports 8888, 8088 KAdmin Web Console)
+  KDC Server (Ports 4321, 8088 KAdmin Web Console)
   |-- Authentication Server Handler
   |-- Ticket Granting Server Handler
   |-- Principal DB (with Cross-Realm principals) / Audit Log / Replay Cache
@@ -242,7 +242,7 @@ Project dùng TCP socket cho các kênh client-server. Mỗi message có frame:
 | --- | --- | --- | --- |
 | Client ↔ KDC/AS | `KDC_HOST:KDC_PORT` | `AS-REQ`, `AS-REP`, `KRB-ERROR` | Pre-auth mã hóa bằng `Kc`; TGT mã hóa bằng `Ktgs`; client part mã hóa bằng `Kc`. |
 | Client ↔ KDC/TGS | `KDC_HOST:KDC_PORT` | `TGS-REQ`, `TGS-REP`, `KRB-ERROR` | TGT mã hóa bằng `Ktgs`; authenticator mã hóa bằng `Kc_tgs`; service ticket mã hóa bằng `Kservice`; client part mã hóa bằng `Kc_tgs`. |
-| Client ↔ Application Server | `APP_SERVER_HOST:APP_SERVER_PORT` | `AP-REQ`, `AP-REP`, `KRB-ERROR` | Service ticket mã hóa bằng `Kservice`; authenticator và AP-REP mã hóa bằng `Kc_service`. |
+| Client ↔ Application Server | `APP_SERVER_HOST:APP_SERVER_PORT` | `AP-REQ`, `AP-REP`, `KRB-ERROR` | Service ticket mã hóa bằng `Kservice`; authenticator mã hóa bằng `Kc_service`; AP-REP mã hóa bằng `client_subkey` nếu có, nếu không dùng `Kc_service`. |
 | AS ↔ TGS | Nội bộ trong cùng process `kdc.kdc_server` | Dispatch theo `msg_type` | Không có network riêng giữa AS và TGS trong demo; cả hai dùng chung KDC DB. |
 | KDC ↔ Application Server | Không có kênh TCP runtime trực tiếp | Không trao đổi request/response runtime | Quan hệ tin cậy được thiết lập bằng `Kservice`: KDC lưu trong DB và export keytab; Application Server đọc keytab. |
 
@@ -281,6 +281,7 @@ Vì chưa có TLS/mTLS, DER chỉ là định dạng tuần tự hóa chứ khô
 | Lỗi | Nơi phát hiện | Error |
 | --- | --- | --- |
 | Client không tồn tại | AS | `KDC_ERR_C_PRINCIPAL_UNKNOWN` |
+| Client disabled/locked | AS | `KDC_ERR_CLIENT_REVOKED` |
 | Sai password/pre-auth | AS | `KDC_ERR_PREAUTH_FAILED` |
 | Request sai realm | AS/TGS | `KDC_ERR_WRONG_REALM` |
 | TGT sai key/bị sửa | TGS | `KRB_AP_ERR_MODIFIED` |

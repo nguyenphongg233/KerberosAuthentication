@@ -318,6 +318,7 @@ Project encode error bằng numeric code gần RFC:
 | --- | --- |
 | `KDC_ERR_C_PRINCIPAL_UNKNOWN` | `6` |
 | `KDC_ERR_S_PRINCIPAL_UNKNOWN` | `7` |
+| `KDC_ERR_CLIENT_REVOKED` | `18` |
 | `KDC_ERR_PREAUTH_FAILED` | `24` |
 | `KRB_AP_ERR_TKT_EXPIRED` | `32` |
 | `KRB_AP_ERR_TKT_NYV` | `33` |

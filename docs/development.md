@@ -42,7 +42,7 @@ Khi thêm hoặc sửa một field trong AS/TGS/AP:
 6. Cập nhật credential cache nếu field cần lưu lâu hơn một process.
 7. Cập nhật `docs/protocol.md`.
 8. Cập nhật `docs/message-reference.md`.
-9. Chạy `py_compile` và end-to-end test với `KRB_WIRE_FORMAT=der`.
+9. Chạy `compileall` và end-to-end test với `KRB_WIRE_FORMAT=der`.
 
 ## Thêm Service Demo Mới
 
@@ -117,13 +117,26 @@ Cần cập nhật:
 
 ## Chiến Lược Automated Test
 
-Project hiện chưa có test suite chính thức. Cấu trúc đề xuất:
-
-Test regression hiện có:
+Project hiện có test suite regression chính thức, tách theo từng cơ chế để có thể chạy lẻ khi cần debug:
 
 ```text
 tests/
-  test_kerberos_regression.py
+  support.py
+  test_as_preauth.py
+  test_replay_protection.py
+  test_ticket_integrity.py
+  test_ticket_lifetime.py
+  test_service_lookup.py
+  test_key_rotation.py
+  test_keytab_kvno.py
+  test_ccache_metadata.py
+  test_asn1_message_format.py
+  test_application_server_ap.py
+  test_tgt_renewal.py
+  test_client_tgt_renewal.py
+  test_kadmin_cli.py
+  test_kadmin_web_api.py
+  test_e2e_subprocess.py
 ```
 
 Chạy bằng:
@@ -135,13 +148,28 @@ python -m unittest discover -s tests -p "test_*.py" -v
 Các case hiện được kiểm:
 
 - Wrong password bị AS trả `KDC_ERR_PREAUTH_FAILED`.
+- Nhiều lần pre-auth fail sẽ khóa tạm principal và trả `KDC_ERR_CLIENT_REVOKED`.
 - Unknown principal bị AS trả `KDC_ERR_C_PRINCIPAL_UNKNOWN`.
+- Missing pre-auth và old timestamp bị từ chối.
 - Replayed TGS authenticator bị `KRB_AP_ERR_REPEAT`.
+- Tampered TGT bị `KRB_AP_ERR_MODIFIED`.
+- Expired/not-yet-valid TGT bị từ chối.
+- Unknown service bị `KDC_ERR_S_PRINCIPAL_UNKNOWN`.
 - TGT cũ vẫn dùng được sau khi rotate TGS key nhờ `principal_keys` và `kvno`.
 - Keytab chọn exact `kvno` và fallback về highest `kvno`.
-- Ccache reload vẫn giữ `ticket_kvno`/`ticket_enctype`.
+- Ccache reload vẫn giữ `ticket_kvno`/`ticket_enctype` và bỏ service ticket hết hạn.
+- ASN.1 application tag và AS-REQ DER round-trip.
+- AP-REQ hợp lệ tại Application Server trả `AP_REP`.
+- Replayed AP authenticator bị `KRB_AP_ERR_REPEAT`.
+- AP request sai service hoặc service ticket bị sửa bị `KRB_AP_ERR_MODIFIED`.
+- TGT hết hạn nhưng còn trong `renew_till` được renew; quá `renew_till` thì bị từ chối.
+- `client_app.renew_tgt_exchange()` cập nhật TGT trong cache và cho phép TGS Exchange tiếp theo.
+- `kadmin cpw` tăng kvno, giữ key history/audit; `ktadd --all-versions` export đủ key versions.
+- KAdmin Web API add/list/toggle/delete principal và đọc audit log.
+- E2E subprocess mở KDC/App Server trên port tạm và chạy client CLI hoàn chỉnh.
+- Negative E2E sai password dừng ở AS Exchange và không chạy tiếp TGS/AP.
 
-Các test nên tách thêm khi mở rộng:
+Các nhóm test nên bổ sung tiếp khi mở rộng:
 
 ```text
 tests/
@@ -195,6 +223,7 @@ tests/
 - Missing preauth -> `KDC_ERR_PREAUTH_FAILED`.
 - Wrong password/preauth key -> `KDC_ERR_PREAUTH_FAILED`.
 - Old timestamp -> `KRB_AP_ERR_SKEW`.
+- Repeated preauth failure above threshold -> `KDC_ERR_CLIENT_REVOKED`.
 - Nonce được echo trong encrypted client part.
 - TGT có `server_principal = krbtgt/REALM@REALM`.
 
@@ -225,7 +254,7 @@ Nên start KDC và Application Server trong subprocess với port riêng:
 
 ```powershell
 $env:KRB_WIRE_FORMAT = "der"
-$env:KDC_PORT = "18888"
+$env:KDC_PORT = "14321"
 $env:APP_SERVER_PORT = "18000"
 ```
 
@@ -341,7 +370,7 @@ Kerberos chỉ xác thực danh tính. Application Server hiện chưa có autho
 
 ## Definition Of Done Cho Thay Đổi Giao Thức
 
-- Code pass `py_compile`.
+- Code pass `compileall`.
 - Happy path chạy đủ AS/TGS/AP với `KRB_WIRE_FORMAT=der`.
 - ASN.1/DER round-trip test pass.
 - Sai password fail ở AS.

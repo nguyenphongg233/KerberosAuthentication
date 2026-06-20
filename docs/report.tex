@@ -297,7 +297,7 @@ Project đã mô phỏng và triển khai toàn diện các cấu trúc chính c
 \hline
 \texttt{client/client\_app.py} & CLI client, thực hiện AS/TGS/AP Exchange, kiểm nonce và mutual authentication \\
 \hline
-\texttt{client/credential\_cache.py} & Lưu TGT, service ticket và session key trong credential cache nhị phân MIT ccache v4 \\
+\texttt{client/credential\_cache.py} & Lưu TGT, service ticket và session key trong credential cache nhị phân MIT ccache v4 subset \\
 \hline
 \texttt{kdc/kdc\_server.py} & TCP server của KDC, nhận request và dispatch đến AS/TGS handler \\
 \hline
@@ -341,7 +341,7 @@ Project đã mô phỏng và triển khai toàn diện các cấu trúc chính c
 \hline
 \texttt{APP\_SERVER\_NAME} & \texttt{localhost} & Host component trong service principal \\
 \hline
-\texttt{KDC\_HOST}, \texttt{KDC\_PORT} & \texttt{127.0.0.1}, \texttt{8888} & Địa chỉ KDC \\
+\texttt{KDC\_HOST}, \texttt{KDC\_PORT} & \texttt{127.0.0.1}, \texttt{4321} & Địa chỉ KDC \\
 \hline
 \texttt{APP\_SERVER\_HOST}, \texttt{APP\_SERVER\_PORT} & \texttt{127.0.0.1}, \texttt{8000} & Địa chỉ Application Server \\
 \hline
@@ -364,16 +364,19 @@ KDC sử dụng SQLite tại \texttt{kdc/database.db}. Các bảng chính:
 \begin{itemize}
     \item \texttt{principals}: lưu principal, loại principal, realm, salt, key, kvno, enctype, KDF metadata và trạng thái.
     \item \texttt{principal\_aliases}: ánh xạ alias ngắn như \texttt{alice} sang \texttt{alice@DEMO.LOCAL}.
+    \item \texttt{principal\_keys}: lưu lịch sử long-term key theo \texttt{principal}/\texttt{kvno}/\texttt{enctype} để hỗ trợ key rotation.
     \item \texttt{audit\_log}: ghi sự kiện AS/TGS/KDC.
     \item \texttt{replay\_cache}: lưu fingerprint authenticator đã sử dụng.
 \end{itemize}
+
+Bảng \texttt{principals} giữ current key. Khi \texttt{kadmin cpw} đổi password/key, \texttt{kvno} tăng lên và key cũ được giữ trong \texttt{principal\_keys}; nhờ đó KDC vẫn có thể giải mã TGT cũ trong thời gian ticket còn hạn.
 
 \subsection{Dẫn xuất khóa}
 
 Long-term key được dẫn xuất bằng PBKDF2-HMAC-SHA1:
 
 \begin{lstlisting}[style=textcode]
-PBKDF2-HMAC-SHA1(password, principal_salt, 1000 iterations)
+PBKDF2-HMAC-SHA1(password, principal_salt, 4096 iterations)
 \end{lstlisting}
 Sau đó, kết quả được dẫn xuất thông qua hàm derive-random (DK) với hằng số là chuỗi \texttt{"kerberos"} theo RFC 3962.
 
@@ -430,15 +433,15 @@ KDC export keytab nhị phân {\bf MIT Keytab v2} cho Application Server:
 app_server/<APP_SERVICE_NAME>.keytab
 \end{lstlisting}
 
-Keytab chứa principal, realm, kvno, enctype và key của service dưới định dạng nhị phân big-endian. Application Server đọc file này khi start và dùng key để decrypt service ticket.
+Keytab chứa principal, realm, kvno, enctype và key của service dưới định dạng nhị phân big-endian. Application Server chọn key theo principal, kvno và enctype trong outer ticket; nếu ticket không có kvno thì chọn entry có kvno cao nhất. Lệnh \texttt{kadmin.py ktadd --all-versions} có thể export toàn bộ key versions đã lưu cho service principal.
 
-Client lưu credential cache nhị phân {\bf MIT ccache v4} tại:
+Client lưu credential cache nhị phân {\bf MIT ccache v4 subset} tại:
 
 \begin{lstlisting}[style=textcode]
 client/krb5cc_demo
 \end{lstlisting}
 
-Cache chứa TGT, service ticket, session key và metadata thời hạn dưới định dạng nhị phân chuẩn. Nếu ticket đã quá \texttt{endtime}, client tự bỏ cache entry khi đọc.
+Cache chứa TGT, service ticket, session key, metadata thời hạn và một authdata metadata entry riêng của demo để giữ \texttt{ticket\_enctype}/\texttt{ticket\_kvno} sau khi reload cache từ file. Project chưa lưu đầy đủ outer \texttt{Ticket} DER như MIT Kerberos production, nhưng đủ metadata để dựng lại outer ticket fields khi gửi TGS/AP request. Nếu ticket đã quá \texttt{endtime}, client tự bỏ cache entry khi đọc.
 
 \section{ASN.1/DER VÀ ĐỊNH DẠNG BẢN TIN}
 
@@ -450,7 +453,7 @@ Mỗi message trên TCP có dạng:
 [4-byte big-endian length][DER payload]
 \end{lstlisting}
 
-Trong đó DER payload là outer Kerberos message. Project có thể chuyển về JSON debug bằng \texttt{KRB\_WIRE\_FORMAT=json}, nhưng chế độ mặc định là \texttt{der}.
+Trong đó DER payload là outer Kerberos message. Project có thể chuyển về JSON debug bằng \texttt{KRB\_WIRE\_FORMAT=json}; các field nhị phân được bọc Base64 trong JSON. Chế độ mặc định vẫn là \texttt{der}.
 
 \subsection{Các kênh truyền thông}
 
@@ -471,7 +474,7 @@ Client -- Application Server & \texttt{AP-REQ}, \texttt{AP-REP}, \texttt{KRB-ERR
 \hline
 AS -- TGS & Dispatch nội bộ trong process KDC & AS và TGS là hai handler logic trong \texttt{kdc.kdc\_server}, không có socket riêng giữa hai server logic này. \\
 \hline
-KDC -- Application Server & Không có message runtime trực tiếp & Quan hệ tin cậy dựa trên \texttt{Kservice}: KDC lưu trong DB và export keytab, Application Server đọc keytab khi start. \\
+KDC -- Application Server & Không có message runtime trực tiếp & Quan hệ tin cậy dựa trên \texttt{Kservice}: KDC lưu trong DB và export keytab, Application Server đọc keytab khi xử lý AP-REQ. \\
 \hline
 \end{tabularx}
 \caption{Các kênh truyền thông trong project}
@@ -504,7 +507,7 @@ TGS-REP & Service ticket chứa \texttt{Kc\_service} và thông tin client & \te
 \hline
 AP-REQ & Authenticator của client & \texttt{Kc\_service} & Application Server \\
 \hline
-AP-REP & Timestamp xác thực ngược lại server & \texttt{Kc\_service} & Client \\
+AP-REP & Timestamp xác thực ngược lại server & \texttt{client\_subkey} nếu có, nếu không dùng \texttt{Kc\_service} & Client \\
 \hline
 \end{tabularx}
 \caption{Cơ chế bảo vệ dữ liệu khi truyền qua mạng}
@@ -558,7 +561,7 @@ Mục tiêu của AS Exchange là cấp TGT cho client sau khi client chứng mi
 \begin{algorithmic}[1]
 \State Client chuẩn hóa username thành \texttt{alice@DEMO.LOCAL}
 \State Client dẫn xuất \texttt{Kc = PBKDF2(password, salt)}
-\State Client tạo pre-authentication data gồm principal, realm, timestamp, \texttt{ctime}, \texttt{cusec}
+\State Client tạo \texttt{PA-ENC-TIMESTAMP} gồm \texttt{ctime}/\texttt{cusec}; principal và realm nằm trong \texttt{req-body}
 \State Client mã hóa pre-authentication data bằng \texttt{Kc}
 \State Client gửi \texttt{AS-REQ} dạng DER tới KDC
 \State AS tìm principal trong database và lấy key đã dẫn xuất
@@ -587,11 +590,11 @@ Mục tiêu của TGS Exchange là dùng TGT để xin service ticket cho một 
 \State Client lấy TGT và \texttt{Kc\_tgs} từ credential cache
 \State Client tạo authenticator mới và mã hóa bằng \texttt{Kc\_tgs}
 \State Client gửi \texttt{TGS-REQ} dạng DER; \texttt{PA-TGS-REQ} chứa \texttt{AP-REQ} với TGT và authenticator
-\State TGS decrypt TGT bằng \texttt{Ktgs}
+\State TGS chọn đúng TGS key theo principal/kvno/enctype rồi decrypt TGT
 \State TGS kiểm TGT dành cho đúng TGS, đúng realm và chưa hết hạn
 \State TGS decrypt authenticator bằng \texttt{Kc\_tgs}
 \State TGS kiểm principal match, clock skew và replay cache
-\State TGS kiểm service principal tồn tại và có loại \texttt{service}
+\State TGS kiểm service principal tồn tại và có loại \texttt{service} hoặc \texttt{tgs}
 \State TGS sinh \texttt{Kc\_service}, tạo service ticket và mã hóa bằng service key
 \State TGS trả \texttt{TGS-REP} cho client
 \State Client decrypt client part, kiểm nonce và lưu service ticket
@@ -607,13 +610,13 @@ AP Exchange là pha client dùng service ticket để truy cập Application Ser
 \begin{algorithmic}[1]
 \State Client lấy service ticket và \texttt{Kc\_service} từ credential cache
 \State Client tạo authenticator mới, mã hóa bằng \texttt{Kc\_service}
-\State Client gửi \texttt{AP-REQ} dạng DER tới Application Server
-\State Server decrypt service ticket bằng key trong keytab
+\State Client gửi \texttt{Authorization: Negotiate <Base64(AP-REQ DER)>} tới Application Server
+\State Server chọn keytab entry theo principal/kvno/enctype và decrypt service ticket
 \State Server kiểm ticket dành cho đúng service, đúng realm và chưa hết hạn
 \State Server decrypt authenticator bằng \texttt{Kc\_service}
 \State Server kiểm principal match, clock skew và replay cache
-\State Server trả \texttt{AP-REP} mã hóa bằng \texttt{Kc\_service}, chứa timestamp client cộng 1
-\State Client decrypt \texttt{AP-REP} và xác nhận mutual authentication
+\State Server trả \texttt{AP-REP} mã hóa bằng client subkey nếu có, nếu không thì dùng \texttt{Kc\_service}; nội dung chứa lại \texttt{ctime}/\texttt{cusec} của authenticator cùng subkey/sequence number của server
+\State Client decrypt \texttt{AP-REP} và xác nhận \texttt{ctime}/\texttt{cusec} khớp để hoàn tất mutual authentication
 \end{algorithmic}
 \end{algorithm}
 
@@ -638,7 +641,7 @@ Authenticator có \texttt{ctime/cusec} & Giới hạn replay window và tăng đ
 \hline
 Persistent replay cache & Authenticator đã dùng được lưu trong SQLite, không chỉ nằm trong memory process. \\
 \hline
-Mutual authentication & Client kiểm \texttt{AP-REP} có timestamp bằng timestamp gửi đi cộng 1. \\
+Mutual authentication & Client kiểm \texttt{AP-REP} có \texttt{ctime}/\texttt{cusec} khớp với authenticator đã gửi. \\
 \hline
 Keytab & Application Server lấy service key từ keytab thay vì hard-code password trong code. \\
 \hline
@@ -678,7 +681,7 @@ Project hiện chưa triển khai:
     \item Tương thích trực tiếp 100\% với nhân hệ điều hành Windows Active Directory Domain Controller (do tự xây dựng client/server độc lập bằng Python thay vì tích hợp các API hệ thống GSSAPI/SSPI).
     \item Secret manager và key rotation tự động hoàn chỉnh cho môi trường production.
     \item TLS/mTLS cho các socket TCP.
-    \item Rate limiting và account lockout cho các cuộc tấn công đoán mật khẩu.
+    \item Rate limiting/account lockout production-grade dùng backend phân tán cho nhiều KDC instance. Bản demo hiện đã có lockout tạm thời ở AS pre-auth.
 \end{itemize}
 
 \section{CHƯƠNG TRÌNH THỬ NGHIỆM}
@@ -700,11 +703,11 @@ Wire format & ASN.1/DER mặc định bằng \texttt{pyasn1} \\
 \hline
 Mã hóa / checksum & AES-CTS + HMAC-SHA1-96 (\texttt{pycryptodome}) \\
 \hline
-KDF & PBKDF2-HMAC-SHA1, 1000 iterations + derive-random (RFC 3962) \\
+KDF & PBKDF2-HMAC-SHA1, 4096 iterations + derive-random (RFC 3962) \\
 \hline
 Database & SQLite \\
 \hline
-Keytab/cache & Định dạng nhị phân MIT Keytab v2 \& ccache v4 \\
+Keytab/cache & Định dạng nhị phân MIT Keytab v2 \& ccache v4 subset \\
 \hline
 \end{tabularx}
 \end{table}
@@ -728,7 +731,11 @@ python -m app_server.service_server
 python -m client.client_app
 \end{lstlisting}
 
-Hoặc chạy kịch bản kiểm thử liên Realm tự động:
+KAdmin Web chạy tại \texttt{http://127.0.0.1:8088/}. Đây là dashboard quản trị local cho demo, dùng cùng SQLite database với KDC. Giao diện và REST API hỗ trợ xem thống kê, liệt kê principal, thêm principal user/service, bật/tắt principal, xóa principal và xem audit log. Các endpoint chính gồm \texttt{GET /api/statistics}, \texttt{GET /api/principals}, \texttt{POST /api/principals}, \texttt{POST /api/principals/toggle}, \texttt{POST /api/principals/delete} và \texttt{GET /api/audit\_logs}. Khi một principal bị disable qua dashboard, AS sẽ từ chối bằng \texttt{KDC\_ERR\_CLIENT\_REVOKED}. Do Web Console dùng HTTP thô và chưa có cơ chế đăng nhập/TLS/mTLS riêng, nhóm chỉ sử dụng nó làm công cụ demo local, không xem đây là giao thức quản trị production như \texttt{kadmin} thật.
+
+Ngoài app demo chạy liền ba pha, client còn có các lệnh mô phỏng thao tác người dùng Kerberos cơ bản: \texttt{python -m client.kinit alice} để lấy TGT, \texttt{python -m client.klist} để xem credential cache, \texttt{python -m client.kvno fileserver} để xin service ticket và in kvno, \texttt{python -m client.kaccess fileserver} để truy cập Application Server bằng ticket trong cache, \texttt{python -m client.krenew} để renew TGT và \texttt{python -m client.kdestroy} để xóa cache.
+
+Hoặc chạy kịch bản kiểm thử liên Realm tự động. Script này dùng temp runtime riêng, không xóa database/keytab/cache thật trong repository:
 
 \begin{lstlisting}[style=textcode]
 python scratch/test_cross_realm.py
@@ -764,6 +771,8 @@ Replay authenticator & Gửi lại cùng authenticator & TGS/AP trả \texttt{KR
 \hline
 Ticket hết hạn & Dùng ticket quá \texttt{endtime} & TGS/AP trả \texttt{KRB\_AP\_ERR\_TKT\_EXPIRED} \\
 \hline
+Ticket chưa hiệu lực & Dùng ticket trước \texttt{starttime} quá clock skew & TGS/AP trả \texttt{KRB\_AP\_ERR\_TKT\_NYV} \\
+\hline
 Ticket sai service & Dùng ticket không dành cho service hiện tại & AP trả \texttt{KRB\_AP\_ERR\_MODIFIED} \\
 \hline
 \end{tabularx}
@@ -774,10 +783,42 @@ Ticket sai service & Dùng ticket không dành cho service hiện tại & AP tr�
 Nhóm đã chạy các kiểm tra chính sau:
 
 \begin{lstlisting}[style=textcode]
-python -m py_compile core\crypto.py core\principal.py core\keytab.py core\replay_cache.py core\messages.py core\asn1_codec.py core\network.py kdc\database.py kdc\as_handler.py kdc\tgs_handler.py kdc\kdc_server.py app_server\service_server.py client\credential_cache.py client\client_app.py
+python -m compileall core kdc app_server client tests scratch\test_cross_realm.py scratch\demo_security_flows.py scratch\demo_tgt_renewal.py
 \end{lstlisting}
 
 Kết quả: biên dịch cú pháp thành công.
+
+Kiểm thử regression in-process:
+
+\begin{lstlisting}[style=textcode]
+python -m unittest discover -s tests -p "test_*.py" -v
+\end{lstlisting}
+
+Kết quả: 32 regression tests đều pass. Các case bao gồm sai password, principal không tồn tại, thiếu pre-auth, timestamp cũ, account lockout tạm thời, replay authenticator ở TGS và Application Server, AP wrong-service kể cả khi keytab chứa nhiều service key, TGT/service ticket bị sửa, ticket hết hạn/chưa hiệu lực, service không tồn tại, TGT renewal ở TGS handler và qua \texttt{client\_app.renew\_tgt\_exchange()}, key history/kvno rotation, KAdmin CLI \texttt{cpw}/\texttt{ktadd --all-versions}, KAdmin Web API, keytab nhiều kvno, ccache metadata, ASN.1/DER round-trip và E2E subprocess mở KDC/App Server trên port tạm gồm cả negative case sai password. Bộ test này dùng runtime tạm nên không ảnh hưởng database/keytab/cache thật trong repository.
+
+Demo luồng bảo mật có giải thích message và tấn công:
+
+\begin{lstlisting}[style=textcode]
+python scratch/demo_security_flows.py
+\end{lstlisting}
+
+Kết quả: script in rõ từng bước \texttt{AS\_REQ}, \texttt{AS\_REP}, \texttt{TGS\_REQ}, \texttt{TGS\_REP}; các kịch bản wrong password, tampered TGT và replay authenticator đều bị chặn bằng \texttt{KRB\_ERROR}; kịch bản key rotation cho thấy TGT cũ còn hạn vẫn được chấp nhận nhờ \texttt{kvno} và \texttt{principal\_keys}.
+
+Demo riêng cho TGT renewal:
+
+\begin{lstlisting}[style=textcode]
+python scratch/demo_tgt_renewal.py
+\end{lstlisting}
+
+Kết quả: script tạo TGT đã hết \texttt{endtime} nhưng còn trong \texttt{renew\_till}, gửi \texttt{TGS\_REQ} với \texttt{kdc\_options=['renew']}, nhận TGT mới và dùng TGT mới để xin service ticket thành công.
+
+Smoke test tích hợp HTTP/cross-realm:
+
+\begin{lstlisting}[style=textcode]
+python scratch/test_cross_realm.py
+\end{lstlisting}
+
+Kết quả: \texttt{charlie@PARTNER.LOCAL} truy cập service trong realm PARTNER.LOCAL thành công; \texttt{alice@DEMO.LOCAL} lấy cross-realm TGT và service ticket cho \texttt{fileserver/localhost@PARTNER.LOCAL} thành công.
 
 Kiểm thử ASN.1/DER round-trip:
 \begin{itemize}
@@ -827,9 +868,9 @@ Authentication failed. Exiting.
 Để nâng cấp project gần Kerberos production hơn, có thể thực hiện các hướng sau:
 \begin{enumerate}
     \item Thêm kênh bảo mật mạng bổ sung (TLS/mTLS) cho các socket TCP.
-    \item Thêm key version history và key rotation thực sự.
+    \item Tự động hóa rotation policy, cleanup key history cũ và cảnh báo khi keytab lỗi thời.
     \item Thêm permission hardening cho các file keytab và credential cache nhị phân.
-    \item Thêm rate limiting và cơ chế lockout tài khoản khi đoán sai mật khẩu nhiều lần.
+    \item Mở rộng rate limiting và cơ chế lockout tài khoản sang backend dùng chung nếu chạy nhiều KDC instance.
     \item Tách config runtime thành các file cấu hình ngoài (YAML/INI).
 \end{enumerate}
 
@@ -839,7 +880,7 @@ Authentication failed. Exiting.
 
 Qua quá trình nghiên cứu và triển khai, nhóm đã xây dựng được một hệ thống mô phỏng Kerberos V5 tương đối đầy đủ ở mức học thuật. Hệ thống thể hiện rõ vai trò của KDC, AS, TGS, Application Server, ticket, session key và authenticator. Mật khẩu không được gửi qua mạng; client chứng minh danh tính thông qua pre-authentication; TGT được dùng để xin service ticket; Application Server xác thực client bằng service ticket và authenticator; client xác thực ngược lại server bằng AP-REP.
 
-So với mô phỏng đơn giản ban đầu, project hiện tại đã tiến sát các tiêu chuẩn RFC 4120, RFC 3961, và RFC 3962 nhờ bổ sung principal/realm chuẩn, dẫn xuất khóa PBKDF2-HMAC-SHA1 có salt, định dạng nhị phân chuẩn **MIT Keytab v2** và **MIT ccache v4**, cơ chế **Xác thực chéo Realm (Cross-Realm Trust)**, phân quyền nhóm (RBAC/Authorization Data), đàm phán subkey/seq-number, replay cache bền vững, audit log, outer/inner wire messages dạng ASN.1/DER và thuật toán mã hóa đối xứng AES-CTS kết hợp checksum HMAC-SHA1-96 chuẩn hóa cùng cơ chế Key Usage. Tuy nhiên, nhóm cũng xác định rõ giới hạn: đây vẫn chưa phải Kerberos production hoàn toàn do socket TCP chưa tích hợp TLS/mTLS và chưa tương thích trực tiếp hoàn toàn với nhân hệ thống Active Directory.
+So với mô phỏng đơn giản ban đầu, project hiện tại đã tiến sát các tiêu chuẩn RFC 4120, RFC 3961, và RFC 3962 nhờ bổ sung principal/realm chuẩn, dẫn xuất khóa PBKDF2-HMAC-SHA1 có salt, định dạng nhị phân MIT Keytab v2 và MIT ccache v4 subset, cơ chế **Xác thực chéo Realm (Cross-Realm Trust)**, phân quyền nhóm (RBAC/Authorization Data), đàm phán subkey/seq-number, replay cache bền vững, audit log, outer/inner wire messages dạng ASN.1/DER và thuật toán mã hóa đối xứng AES-CTS kết hợp checksum HMAC-SHA1-96 chuẩn hóa cùng cơ chế Key Usage. Tuy nhiên, nhóm cũng xác định rõ giới hạn: đây vẫn chưa phải Kerberos production hoàn toàn do socket TCP chưa tích hợp TLS/mTLS và chưa tương thích trực tiếp hoàn toàn với nhân hệ thống Active Directory.
 
 Kết quả đạt được đáp ứng mục tiêu môn học: hiểu cơ sở lý thuyết của Kerberos, phân tích được các rủi ro bảo mật, và tự xây dựng được chương trình mô phỏng có kiểm thử để minh họa toàn bộ luồng xác thực.
 

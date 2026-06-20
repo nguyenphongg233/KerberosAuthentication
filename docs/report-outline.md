@@ -176,7 +176,7 @@ Chưa triển khai:
 
 ## 9. Thử Nghiệm Và Kết Quả
 
-- Kiểm tra cú pháp bằng `py_compile`.
+- Kiểm tra cú pháp/import bằng `compileall`.
 - Happy path:
   - `alice/alice_password`.
   - AS thành công.
@@ -212,12 +212,12 @@ Chưa triển khai:
 - Rủi ro nếu lộ credential cache.
 - Rủi ro nếu lộ keytab.
 - Rủi ro nếu lộ KDC DB hoặc key `krbtgt`.
-- Hạn chế do chưa có secret manager, TLS, authorization và rate limiting.
+- Hạn chế do chưa có secret manager, TLS, authorization nâng cao và rate limiting/account lockout production-grade.
 
 - Thêm kênh bảo mật TLS/mTLS bảo vệ các socket TCP.
 - Thêm key rotation và KVNO history.
 - Thêm permission hardening cho các file keytab và credential cache nhị phân.
-- Thêm rate limiting và account lockout.
+- Mở rộng rate limiting/account lockout sang backend dùng chung nếu chạy nhiều KDC instance.
 - Thêm audit log phía Application Server.
 - Tách config thành các file cấu hình ngoài (YAML/INI).
 

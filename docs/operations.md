@@ -34,12 +34,13 @@ pip install -r requirements.txt
 | Thành phần | Lệnh chạy | Vai trò |
 | --- | --- | --- |
 | KDC | `python -m kdc.kdc_server` | Nhận `AS_REQ` và `TGS_REQ`, quản lý principal DB, audit log và keytab export |
+| KAdmin Web | `python -m kdc.kadmin_web` | Dashboard local và REST API quản trị principal/audit log trên `127.0.0.1:8088` |
 | Application Server | `python -m app_server.service_server` | Nhận `AP_REQ`, đọc service key từ keytab, trả `AP_REP` |
 | Client | `python -m client.client_app` | Thực hiện AS/TGS/AP Exchange và lưu credential cache |
 
 ## Chạy Hệ Thống
 
-Cần ba terminal riêng tại thư mục gốc project.
+Cần ba terminal riêng tại thư mục gốc project. Có thể mở thêm một terminal cho KAdmin Web nếu muốn demo giao diện quản trị.
 
 ### Terminal 1: KDC
 
@@ -62,9 +63,51 @@ Log kỳ vọng:
 [KDC] Database initialized at '...\kdc\database.db'
 [KDC] Registered principals: ['alice@DEMO.LOCAL', 'bob@DEMO.LOCAL', ...]
 Kerberos KDC Server
-Listening on 127.0.0.1:8888
+Listening on 127.0.0.1:4321
 [KDC] Waiting for connections...
 ```
+
+### Terminal Tùy Chọn: KAdmin Web
+
+```powershell
+python -m kdc.kadmin_web
+```
+
+Mở dashboard:
+
+```text
+http://127.0.0.1:8088/
+```
+
+KAdmin Web dùng cùng SQLite database với KDC qua `KDC_DB_PATH`. Nên start KDC ít nhất một lần trước để database, principal mặc định và keytab được khởi tạo.
+
+Chức năng trên dashboard:
+
+- Xem thống kê principal, AS/TGS request, request lỗi và success rate.
+- Xem danh sách principal, realm, type, `kvno`, enctype, groups và trạng thái disabled.
+- Thêm principal user/service. Khi thêm service principal, web API ghi keytab service theo cấu hình hiện tại.
+- Toggle enable/disable principal. Principal disabled sẽ bị AS trả `KDC_ERR_CLIENT_REVOKED`.
+- Xóa principal.
+- Xem audit log và lọc theo component/outcome/search/limit.
+
+REST API:
+
+| Method | Endpoint | Payload / query |
+| --- | --- | --- |
+| `GET` | `/api/statistics` | Không cần payload |
+| `GET` | `/api/principals` | Không cần payload |
+| `POST` | `/api/principals` | JSON: `principal_name`, `password`, `type`, `groups` |
+| `POST` | `/api/principals/toggle` | JSON: `principal_name` |
+| `POST` | `/api/principals/delete` | JSON: `principal_name` |
+| `GET` | `/api/audit_logs` | Query tùy chọn: `limit`, `component`, `outcome`, `search` |
+
+Test nhanh API:
+
+```powershell
+python tests/test_kadmin_web_api.py
+```
+
+Lưu ý: KAdmin Web là demo local qua HTTP thô, chưa có login riêng, TLS/mTLS, CSRF protection hoặc kadmin RPC chuẩn. Không nên trình bày nó như một kênh quản trị production.
 
 ### Terminal 2: Application Server
 
@@ -105,6 +148,58 @@ Mutual authentication verified
 Full Kerberos authentication completed successfully
 ```
 
+### Demo Truy Cập Lại Không Nhập Password
+
+Sau một lần login thành công, client đã lưu TGT và service ticket trong credential cache. Để demo truy cập dịch vụ lại mà không đăng nhập lại:
+
+1. Giữ KDC và Application Server đang chạy.
+2. Chạy lại client:
+
+```powershell
+python -m client.client_app
+```
+
+3. Nhập cùng username, ví dụ `alice`.
+4. Ở dòng password, nhấn Enter để bỏ trống.
+
+Kỳ vọng:
+
+```text
+[Client] Found valid cached TGT for alice@DEMO.LOCAL.
+[Client] Leave password empty to reuse cached credentials.
+[Client] Reusing cached TGT. Skipping AS Exchange.
+[Client] Found valid cached service ticket. Skipping TGS Exchange.
+Phase 3: AP Exchange (Service Access via HTTP Negotiate)
+[Client] ✓ Mutual authentication verified!
+```
+
+Nếu service ticket hết hạn nhưng TGT còn hạn, client sẽ bỏ qua AS Exchange nhưng vẫn chạy TGS Exchange để xin service ticket mới. Nếu TGT cũng hết hạn, client sẽ yêu cầu nhập password lại hoặc phải renew TGT.
+
+### Thao Tác Kerberos-Style
+
+Ngoài app demo chạy liền ba pha, project có các lệnh mô phỏng thao tác người dùng Kerberos cơ bản:
+
+```powershell
+python -m client.kinit alice
+python -m client.klist
+python -m client.kvno fileserver
+python -m client.kaccess fileserver
+python -m client.krenew
+python -m client.kdestroy
+```
+
+Kịch bản demo khuyến nghị:
+
+1. `python -m client.kinit alice`: nhập `alice_password`, client chỉ lấy TGT.
+2. `python -m client.klist`: chứng minh TGT đã nằm trong credential cache.
+3. `python -m client.kvno fileserver`: dùng TGT xin service ticket, in `kvno`.
+4. `python -m client.klist`: thấy thêm service ticket `fileserver/localhost@DEMO.LOCAL`.
+5. `python -m client.kaccess fileserver`: dùng service ticket truy cập Application Server, nhận `AP_REP`.
+6. `python -m client.kdestroy`: xóa cache.
+7. `python -m client.klist`: không còn credential hợp lệ.
+
+Các lệnh này dùng cùng cache file với `client.client_app`, mặc định là `client/krb5cc_demo` hoặc đường dẫn trong `KRB5CCNAME`.
+
 ## Cấu Hình Runtime
 
 | Biến môi trường | Default | Ý nghĩa |
@@ -113,7 +208,7 @@ Full Kerberos authentication completed successfully
 | `APP_SERVICE_NAME` | `fileserver` | Service component trong service principal |
 | `APP_SERVER_NAME` | `localhost` | Host component trong service principal |
 | `KDC_HOST` | `127.0.0.1` | Địa chỉ bind của KDC và target của client |
-| `KDC_PORT` | `8888` | Port bind của KDC và target của client |
+| `KDC_PORT` | `4321` | Port bind của KDC và target của client |
 | `KDC_DB_PATH` | `kdc/database.db` | SQLite database của KDC |
 | `APP_SERVER_HOST` | `127.0.0.1` | Địa chỉ bind của Application Server và target của client |
 | `APP_SERVER_PORT` | `8000` | Port bind của Application Server và target của client |
@@ -134,14 +229,14 @@ $env:KRB_WIRE_FORMAT = "json"
 Ví dụ đổi port KDC:
 
 ```powershell
-$env:KDC_PORT = "8889"
+$env:KDC_PORT = "4322"
 python -m kdc.kdc_server
 ```
 
 Client phải dùng cùng port:
 
 ```powershell
-$env:KDC_PORT = "8889"
+$env:KDC_PORT = "4322"
 python -m client.client_app
 ```
 
@@ -197,7 +292,7 @@ KDC chỉ tạo default principals khi chúng chưa tồn tại. Nếu đã đ�
 Kiểm tra cú pháp:
 
 ```powershell
-python -m py_compile core\crypto.py core\principal.py core\keytab.py core\replay_cache.py core\messages.py core\asn1_codec.py core\network.py kdc\database.py kdc\as_handler.py kdc\tgs_handler.py kdc\kdc_server.py kdc\kadmin.py kdc\kadmin_web.py app_server\service_server.py client\credential_cache.py client\client_app.py scratch\test_cross_realm.py tests\test_kerberos_regression.py
+python -m compileall core kdc app_server client tests scratch\test_cross_realm.py scratch\demo_security_flows.py scratch\demo_tgt_renewal.py
 ```
 
 Chạy regression tests in-process:
@@ -212,10 +307,16 @@ Chạy smoke test tích hợp HTTP/cross-realm bằng temp runtime:
 python scratch/test_cross_realm.py
 ```
 
+Chạy demo TGT renewal có log message:
+
+```powershell
+python scratch/demo_tgt_renewal.py
+```
+
 Kiểm tra port trên Windows:
 
 ```powershell
-Get-NetTCPConnection -LocalPort 8888,8000 -ErrorAction SilentlyContinue
+Get-NetTCPConnection -LocalPort 4321,8000 -ErrorAction SilentlyContinue
 ```
 
 Kiểm tra database có bảng:
@@ -421,16 +522,16 @@ python -m client.client_app
 
 ## Runbook Demo
 
-1. Chạy `python -m unittest discover -s tests -p "test_*.py" -v` để chứng minh các case bảo mật: sai password, replay, kvno/key rotation, keytab và ccache.
-2. Chạy `python scratch/test_cross_realm.py` để chứng minh luồng tích hợp có KDC socket, Application Server HTTP và cross-realm.
-3. Mở terminal KDC và chạy `python -m kdc.kdc_server`.
-4. Mở terminal Application Server và chạy `python -m app_server.service_server`.
-5. Mở terminal Client và chạy `python -m client.client_app`.
-6. Đăng nhập bằng `alice/alice_password`.
-7. Ghi lại ba pha thành công: AS, TGS, AP.
-8. Chạy lại client với `alice/wrong_password`.
-9. Ghi lại lỗi `KDC_ERR_PREAUTH_FAILED`.
-10. Nếu cần trình bày replay, dùng regression test `test_tgs_rejects_replayed_authenticator` thay vì thao tác thủ công khó lặp lại.
+1. Chạy `python -m unittest discover -s tests -p "test_*.py" -v` để chứng minh các case bảo mật tự động: pre-auth, account lockout, TGS/AP replay, wrong-service, ticket integrity/lifetime, unknown service, TGT renewal, client-level renewal, kvno/key rotation, KAdmin CLI/Web API, keytab, ccache, ASN.1 và E2E subprocess.
+2. Chạy `python scratch/demo_security_flows.py` để trình bày rõ message nào được gửi, attacker sửa/gửi lại gì và hệ thống trả `BLOCKED/ALLOWED` ra sao.
+3. Chạy `python scratch/demo_tgt_renewal.py` để trình bày riêng luồng renew TGT.
+4. Chạy `python scratch/test_cross_realm.py` để chứng minh luồng tích hợp có KDC socket, Application Server HTTP và cross-realm.
+5. Mở terminal KDC và chạy `python -m kdc.kdc_server`.
+6. Mở terminal Application Server và chạy `python -m app_server.service_server`.
+7. Mở terminal Client và chạy `python -m client.client_app`.
+8. Đăng nhập bằng `alice/alice_password`.
+9. Ghi lại ba pha thành công: AS, TGS, AP.
+10. Chạy lại client với `alice/wrong_password` và ghi lại lỗi `KDC_ERR_PREAUTH_FAILED`; nếu nhập sai lặp lại tới ngưỡng, AS trả `KDC_ERR_CLIENT_REVOKED` trong thời gian lockout.
 
 ## Dừng Process
 

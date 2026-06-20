@@ -28,6 +28,9 @@ KDC_database/
 
 # Local tooling state
 .codegraph/
+.cursor/
+.gemini/
+GEMINI.md
 .vscode/
 .idea/
 

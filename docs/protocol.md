@@ -64,7 +64,7 @@ Project bảo vệ dữ liệu Kerberos ở tầng payload, không bảo vệ to
 | TGS-REP | Client part chứa `Kc_service`, nonce và lifetime | `Kc_tgs` | Client đang giữ TGT/session key hợp lệ |
 | TGS-REP | Service ticket chứa `Kc_service` và thông tin client | `Kservice` | Application Server có keytab đúng |
 | AP-REQ | Authenticator của client | `Kc_service` | Application Server |
-| AP-REP | Timestamp xác thực ngược lại server | `Kc_service` | Client |
+| AP-REP | Timestamp xác thực ngược lại server | `client_subkey` nếu Authenticator có subkey, nếu không dùng `Kc_service` | Client |
 
 Password plaintext không bao giờ được gửi qua network. Replay được hạn chế bằng `ctime`, `cusec`, clock skew check và SQLite replay cache. Tuy nhiên, vì chưa có TLS/mTLS nên attacker vẫn có thể quan sát metadata như địa chỉ IP, port, thời điểm gửi, số lần kết nối và độ dài frame.
 

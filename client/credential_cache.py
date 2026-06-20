@@ -192,6 +192,7 @@ class CredentialCache:
         self._tgt = tgt
         self._client_tgs_session_key = client_tgs_session_key
         self._tgt_metadata = metadata or {}
+        self._service_tickets.clear()
         self._save()
 
     def get_tgt(self, allow_expired: bool = False) -> tuple:
@@ -237,6 +238,16 @@ class CredentialCache:
         if not entry:
             return {}
         return dict(entry.get("metadata", {}))
+
+    def list_service_tickets(self) -> list[tuple[str, dict]]:
+        """Return non-expired service ticket principals and metadata."""
+        tickets = []
+        for principal in list(self._service_tickets):
+            ticket, _session_key = self.get_service_ticket(principal)
+            if ticket is None:
+                continue
+            tickets.append((principal, dict(self._service_tickets[principal].get("metadata", {}))))
+        return tickets
 
     def clear(self):
         self._tgt = None

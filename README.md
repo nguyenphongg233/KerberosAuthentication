@@ -14,6 +14,8 @@ KerberosAuthentication là dự án Python mô phỏng giao thức xác thực K
 - [Principal Mặc Định](#principal-mặc-định)
 - [Cấu Hình](#cấu-hình)
 - [Luồng Giao Thức](#luồng-giao-thức)
+- [KAdmin Web Console](#kadmin-web-console)
+- [Test Và Demo](#test-và-demo)
 - [Kiểm Tra Nhanh](#kiểm-tra-nhanh)
 - [Giới Hạn Còn Lại](#giới-hạn-còn-lại)
 
@@ -113,6 +115,7 @@ Các module chính:
 - `client/credential_cache.py`: credential cache nhị phân MIT ccache v4 subset.
 - `kdc/kdc_server.py`: TCP server của KDC.
 - `kdc/database.py`: schema/migration, principal store, aliases, audit log, keytab export.
+- `kdc/kadmin_web.py`: web dashboard và REST API quản trị principal/audit log trên `127.0.0.1:8088`.
 - `kdc/as_handler.py`: AS Exchange.
 - `kdc/tgs_handler.py`: TGS Exchange.
 - `app_server/service_server.py`: AP Exchange và service mock.
@@ -156,6 +159,14 @@ KDC sẽ tự:
 - Tạo principal mặc định nếu chưa tồn tại, không ghi đè password/kvno đã đổi bằng `kadmin`.
 - Sinh keytab tại `app_server/<APP_SERVICE_NAME>.keytab`, mặc định là `app_server/fileserver.keytab`.
 
+Terminal tùy chọn cho dashboard quản trị:
+
+```powershell
+python -m kdc.kadmin_web
+```
+
+Mở `http://127.0.0.1:8088/` để xem thống kê, danh sách principal và audit log. Web console dùng cùng `KDC_DB_PATH` với KDC, nên nên start KDC ít nhất một lần để database/keytab được khởi tạo.
+
 Terminal 2:
 
 ```powershell
@@ -167,6 +178,28 @@ Terminal 3:
 ```powershell
 python -m client.client_app
 ```
+
+Nếu đã login thành công trước đó và cache còn hạn, lần chạy tiếp theo nhập cùng username rồi để trống password để bỏ qua AS Exchange. Nếu service ticket cũng còn hạn, client sẽ bỏ qua cả TGS Exchange và đi thẳng tới AP Exchange để truy cập dịch vụ.
+
+Các thao tác kiểu Kerberos CLI cũng được hỗ trợ:
+
+```powershell
+python -m client.kinit alice
+python -m client.klist
+python -m client.kvno fileserver
+python -m client.kaccess fileserver
+python -m client.krenew
+python -m client.kdestroy
+```
+
+Ý nghĩa:
+
+- `kinit`: nhập password để lấy TGT và lưu vào credential cache.
+- `klist`: xem TGT/service ticket đang có trong cache.
+- `kvno`: dùng TGT để xin service ticket và in key version number của service ticket.
+- `kaccess`: truy cập Application Server bằng service ticket trong cache; nếu thiếu service ticket thì tự xin qua TGS trước.
+- `krenew`: renew TGT trong cache nếu còn trong `renew_till`.
+- `kdestroy`: xóa credential cache.
 
 Nhập:
 
@@ -217,7 +250,7 @@ Thông tin truyền trên mạng được bảo vệ ở tầng payload Kerberos
 - `TGS-REQ` gửi authenticator đã mã hóa bằng `Kc_tgs`.
 - Service ticket được mã hóa bằng `Kservice`, nên chỉ Application Server có keytab đúng mới giải mã được.
 - `AP-REQ` gửi authenticator đã mã hóa bằng `Kc_service`.
-- `AP-REP` cũng được mã hóa bằng `Kc_service` để client xác thực ngược lại server.
+- `AP-REP` được mã hóa bằng `client_subkey` nếu Authenticator có subkey; nếu không thì dùng `Kc_service`. Client dùng AP-REP để xác thực ngược lại server.
 
 Giới hạn: project chưa có TLS/mTLS cho TCP channel. ASN.1/DER chỉ là định dạng tuần tự hóa, không phải cơ chế mã hóa kênh truyền; metadata như IP, port, timing và độ dài message vẫn có thể bị quan sát.
 
@@ -229,7 +262,7 @@ Giới hạn: project chưa có TLS/mTLS cho TCP channel. ASN.1/DER chỉ là đ
 | `APP_SERVICE_NAME` | `fileserver` | Service component trong service principal |
 | `APP_SERVER_NAME` | `localhost` | Host component trong service principal |
 | `KDC_HOST` | `127.0.0.1` | Địa chỉ KDC |
-| `KDC_PORT` | `8888` | Port KDC |
+| `KDC_PORT` | `4321` | Port KDC |
 | `KDC_DB_PATH` | `kdc/database.db` | SQLite database của KDC |
 | `APP_SERVER_HOST` | `127.0.0.1` | Địa chỉ Application Server |
 | `APP_SERVER_PORT` | `8000` | Port Application Server |
@@ -241,14 +274,14 @@ Giới hạn: project chưa có TLS/mTLS cho TCP channel. ASN.1/DER chỉ là đ
 Nếu port mặc định bị chiếm:
 
 ```powershell
-$env:KDC_PORT = "8889"
+$env:KDC_PORT = "4322"
 python -m kdc.kdc_server
 ```
 
 Client terminal phải set cùng biến:
 
 ```powershell
-$env:KDC_PORT = "8889"
+$env:KDC_PORT = "4322"
 python -m client.client_app
 ```
 
@@ -309,16 +342,130 @@ Service trả:
 AP_REP = E_Kc_service_or_subkey({ ctime, cusec, subkey, seq_number })
 ```
 
+## KAdmin Web Console
+
+`kdc/kadmin_web.py` là dashboard quản trị local cho demo, không phải giao thức `kadmin` chuẩn của Kerberos production.
+
+Chạy:
+
+```powershell
+python -m kdc.kadmin_web
+```
+
+URL mặc định:
+
+```text
+http://127.0.0.1:8088/
+```
+
+Chức năng chính:
+
+- Xem thống kê tổng số principal, AS/TGS request, số request lỗi và success rate.
+- Xem danh sách principal gồm `principal_name`, type, realm, `kvno`, enctype, trạng thái disabled và groups.
+- Thêm principal user/service; nếu thêm service principal thì ghi keytab theo `DEFAULT_KEYTAB_PATH`.
+- Toggle enable/disable principal. Principal disabled sẽ bị AS từ chối bằng `KDC_ERR_CLIENT_REVOKED`.
+- Xóa principal và alias tương ứng.
+- Xem audit log, có lọc theo `component`, `outcome`, `search` và `limit`.
+
+REST API hiện có:
+
+| Method | Path | Mục đích |
+| --- | --- | --- |
+| `GET` | `/api/statistics` | Lấy thống kê dashboard |
+| `GET` | `/api/principals` | Liệt kê principal |
+| `POST` | `/api/principals` | Thêm principal từ JSON `principal_name`, `password`, `type`, `groups` |
+| `POST` | `/api/principals/toggle` | Bật/tắt principal từ JSON `principal_name` |
+| `POST` | `/api/principals/delete` | Xóa principal từ JSON `principal_name` |
+| `GET` | `/api/audit_logs?limit=50` | Xem audit log |
+
+Test tự động liên quan:
+
+```powershell
+python tests/test_kadmin_web_api.py
+```
+
+Lưu ý bảo mật: KAdmin Web chạy HTTP thô trên localhost, chưa có login riêng, TLS/mTLS, CSRF protection hoặc phân quyền admin như Kerberos production. Chỉ dùng để demo quản trị local và xem audit log.
+
+## Test Và Demo
+
+Repo hiện có ba lớp kiểm thử chính:
+
+| Lớp | File / lệnh | Mục tiêu |
+| --- | --- | --- |
+| Regression in-process | `python -m unittest discover -s tests -p "test_*.py" -v` | Kiểm các hành vi bảo mật cốt lõi mà không cần mở port. |
+| Verbose security-flow demo | `python scratch/demo_security_flows.py` | In rõ message gửi đi, attacker tác động gì, KDC/TGS chặn hoặc cho qua ra sao. |
+| Smoke HTTP/cross-realm | `python scratch/test_cross_realm.py` | Chạy KDC + Application Server + Client bằng temp runtime để kiểm luồng tích hợp. |
+
+Regression tests hiện có 32 case, được tách theo từng cơ chế để có thể chạy riêng từng file:
+
+| File | Cơ chế kiểm |
+| --- | --- |
+| `tests/test_as_preauth.py` | Sai password, principal không tồn tại, thiếu pre-auth, timestamp quá cũ, AS-REP hợp lệ và lockout tạm thời sau nhiều lần pre-auth fail. |
+| `tests/test_replay_protection.py` | Gửi lại cùng TGS authenticator bị `KRB_AP_ERR_REPEAT`. |
+| `tests/test_ticket_integrity.py` | TGT bị sửa ciphertext bị `KRB_AP_ERR_MODIFIED`. |
+| `tests/test_ticket_lifetime.py` | TGT hết hạn hoặc chưa tới `starttime` bị từ chối. |
+| `tests/test_service_lookup.py` | Service principal không tồn tại bị `KDC_ERR_S_PRINCIPAL_UNKNOWN`. |
+| `tests/test_key_rotation.py` | TGT cũ vẫn dùng được sau khi rotate TGS key nhờ `kvno` và `principal_keys`; `init_database()` không reset kvno. |
+| `tests/test_keytab_kvno.py` | Keytab chọn đúng service key theo `principal`/`kvno`/`enctype`, có fallback kvno cao nhất. |
+| `tests/test_ccache_metadata.py` | Ccache reload vẫn giữ metadata `ticket_kvno`/`ticket_enctype` và bỏ service ticket hết hạn. |
+| `tests/test_asn1_message_format.py` | Kiểm application tag ASN.1/DER và round-trip `AS_REQ`. |
+| `tests/test_application_server_ap.py` | AP-REQ hợp lệ, replay AP authenticator, service sai, service ticket bị sửa và wrong-service khi keytab chứa nhiều service key. |
+| `tests/test_tgt_renewal.py` | TGT hết hạn nhưng còn `renew_till` được renew; quá `renew_till` thì bị từ chối. |
+| `tests/test_client_tgt_renewal.py` | Client gọi `client_app.renew_tgt_exchange()`, cập nhật ccache rồi dùng TGT mới để xin service ticket. |
+| `tests/test_kadmin_cli.py` | `kadmin cpw` tăng kvno, giữ key history/audit; `ktadd --all-versions` export đủ key versions. |
+| `tests/test_kadmin_web_api.py` | KAdmin Web REST API add/list/toggle/delete principal và đọc audit log. |
+| `tests/test_e2e_subprocess.py` | Mở KDC/App Server trên port tạm, chạy client CLI happy path và negative E2E sai password. |
+
+Smoke test `scratch/test_cross_realm.py` chạy bằng runtime tạm, không xóa `kdc/database.db`, keytab hoặc credential cache thật trong repo. Kịch bản này kiểm:
+
+- `charlie@PARTNER.LOCAL` truy cập `fileserver/localhost@PARTNER.LOCAL`.
+- `alice@DEMO.LOCAL` lấy cross-realm TGT rồi lấy service ticket cho `fileserver/localhost@PARTNER.LOCAL`.
+- Client hoàn tất AP Exchange qua HTTP `Negotiate` chứa raw AP-REQ/AP-REP DER.
+
+Verbose security-flow demo `scratch/demo_security_flows.py` in theo dạng `Client -> AS`, `Attacker -> TGS`, `KRB_ERROR`, `BLOCKED/ALLOWED`. Kịch bản này trình bày:
+
+- Normal AS -> TGS flow: `AS_REQ`, `AS_REP`, `TGS_REQ`, `TGS_REP`.
+- Wrong password/forged pre-auth: AS trả `KDC_ERR_PREAUTH_FAILED`.
+- Tampered TGT: TGS trả `KRB_AP_ERR_MODIFIED`.
+- Replayed TGS authenticator: TGS trả `KRB_AP_ERR_REPEAT`.
+- Key rotation: TGT cũ còn hạn vẫn được chấp nhận nhờ `kvno` và `principal_keys`.
+
+Verbose TGT renewal demo `scratch/demo_tgt_renewal.py` trình bày riêng luồng renew:
+
+- Client có TGT đã hết `endtime` nhưng còn trong `renew_till`.
+- Client gửi `TGS_REQ` với `kdc_options=['renew']`.
+- TGS trả TGT mới với session key/endtime mới.
+- Client dùng TGT mới để xin service ticket bình thường.
+
+Các cơ chế bổ sung mới hiện đã có:
+
+- Negative E2E sai password: client dừng ở AS Exchange, không đi tiếp TGS/AP.
+- Client-level TGT renewal: `client_app.renew_tgt_exchange()` renew TGT trong cache rồi dùng được tiếp.
+- KAdmin Web API: add/list/toggle/delete principal và audit log.
+- Rate limiting/account lockout: nhiều lần pre-auth fail sẽ khóa tạm principal bằng `KDC_ERR_CLIENT_REVOKED`.
+
 ## Kiểm Tra Nhanh
 
 ```powershell
-python -m py_compile core\crypto.py core\principal.py core\keytab.py core\replay_cache.py core\messages.py core\asn1_codec.py core\network.py kdc\database.py kdc\as_handler.py kdc\tgs_handler.py kdc\kdc_server.py kdc\kadmin.py kdc\kadmin_web.py app_server\service_server.py client\credential_cache.py client\client_app.py scratch\test_cross_realm.py tests\test_kerberos_regression.py
+python -m compileall core kdc app_server client tests scratch\test_cross_realm.py scratch\demo_security_flows.py scratch\demo_tgt_renewal.py
 ```
 
 Regression tests:
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Verbose security-flow demo:
+
+```powershell
+python scratch/demo_security_flows.py
+```
+
+Verbose TGT renewal demo:
+
+```powershell
+python scratch/demo_tgt_renewal.py
 ```
 
 Smoke test an toàn, dùng temp runtime riêng:

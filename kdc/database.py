@@ -149,6 +149,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(cursor, "principals", "updated_at", "REAL DEFAULT 0")
     _add_column_if_missing(cursor, "principals", "disabled", "INTEGER DEFAULT 0")
     _add_column_if_missing(cursor, "principals", "groups", "TEXT DEFAULT '[]'")
+    _add_column_if_missing(cursor, "principals", "failed_auth_count", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cursor, "principals", "locked_until", "REAL DEFAULT 0")
 
     cursor.execute(
         """
@@ -253,8 +255,9 @@ def upsert_principal(conn: sqlite3.Connection, principal_name: str, password: st
         """
         INSERT INTO principals (
             principal_name, secret_key, principal_type, realm, salt, key, kvno,
-            enctype, kdf, iterations, created_at, updated_at, disabled, groups
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            enctype, kdf, iterations, created_at, updated_at, disabled, groups,
+            failed_auth_count, locked_until
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0)
         ON CONFLICT(principal_name) DO UPDATE SET
             secret_key=excluded.secret_key,
             principal_type=excluded.principal_type,
@@ -267,7 +270,9 @@ def upsert_principal(conn: sqlite3.Connection, principal_name: str, password: st
             iterations=excluded.iterations,
             updated_at=excluded.updated_at,
             disabled=0,
-            groups=excluded.groups
+            groups=excluded.groups,
+            failed_auth_count=0,
+            locked_until=0
         """,
         (
             principal_name,
@@ -366,7 +371,8 @@ def resolve_principal(cursor: sqlite3.Cursor, name: str) -> str | None:
 
 
 def get_principal(cursor: sqlite3.Cursor, name: str,
-                  resolve_alias: bool = True) -> dict | None:
+                  resolve_alias: bool = True,
+                  include_disabled: bool = False) -> dict | None:
     """Return a principal record as a dictionary."""
     principal_name = resolve_principal(cursor, name) if resolve_alias else name
     if not principal_name:
@@ -375,7 +381,8 @@ def get_principal(cursor: sqlite3.Cursor, name: str,
     cursor.execute(
         """
         SELECT principal_name, principal_type, realm, salt, key, kvno, enctype,
-               kdf, iterations, created_at, updated_at, disabled, groups
+               kdf, iterations, created_at, updated_at, disabled, groups,
+               failed_auth_count, locked_until
         FROM principals
         WHERE principal_name = ?
         """,
@@ -388,12 +395,73 @@ def get_principal(cursor: sqlite3.Cursor, name: str,
     columns = [
         "principal_name", "principal_type", "realm", "salt", "key", "kvno",
         "enctype", "kdf", "iterations", "created_at", "updated_at", "disabled",
-        "groups",
+        "groups", "failed_auth_count", "locked_until",
     ]
     record = dict(zip(columns, row))
-    if record["disabled"]:
+    if record["disabled"] and not include_disabled:
         return None
     return record
+
+
+def record_auth_failure(conn_or_cursor, principal_name: str,
+                        now: float | None = None,
+                        threshold: int | None = None,
+                        lockout_seconds: int | None = None) -> dict:
+    """Increment AS pre-auth failure count and lock the principal if needed."""
+    from core.messages import AUTH_FAILURE_THRESHOLD, AUTH_LOCKOUT_SECONDS
+
+    now = time.time() if now is None else now
+    threshold = AUTH_FAILURE_THRESHOLD if threshold is None else threshold
+    lockout_seconds = AUTH_LOCKOUT_SECONDS if lockout_seconds is None else lockout_seconds
+
+    row = conn_or_cursor.execute(
+        """
+        SELECT failed_auth_count, locked_until
+        FROM principals
+        WHERE principal_name = ?
+        """,
+        (principal_name,),
+    ).fetchone()
+    if row is None:
+        return {"failed_auth_count": 0, "locked_until": 0, "locked": False}
+
+    current_count = int(row[0] or 0)
+    current_locked_until = float(row[1] or 0)
+    failed_count = current_count + 1
+    locked_until = current_locked_until
+    if failed_count >= threshold:
+        locked_until = max(current_locked_until, now + lockout_seconds)
+
+    conn_or_cursor.execute(
+        """
+        UPDATE principals
+        SET failed_auth_count = ?,
+            locked_until = ?,
+            updated_at = ?
+        WHERE principal_name = ?
+        """,
+        (failed_count, locked_until, now, principal_name),
+    )
+    return {
+        "failed_auth_count": failed_count,
+        "locked_until": locked_until,
+        "locked": locked_until > now,
+    }
+
+
+def reset_auth_failures(conn_or_cursor, principal_name: str) -> None:
+    """Clear AS pre-auth failure count and any temporary lockout."""
+    now = time.time()
+    conn_or_cursor.execute(
+        """
+        UPDATE principals
+        SET failed_auth_count = 0,
+            locked_until = 0,
+            updated_at = ?
+        WHERE principal_name = ?
+        """,
+        (now, principal_name),
+    )
 
 
 def get_principal_key(cursor: sqlite3.Cursor, name: str,

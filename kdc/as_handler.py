@@ -28,9 +28,11 @@ from core.asn1_codec import (
 )
 from core.messages import (
     AS_REP,
+    AUTH_FAILURE_THRESHOLD,
     DEFAULT_TICKET_FLAGS,
     ERROR,
     KDC_ERR_C_PRINCIPAL_UNKNOWN,
+    KDC_ERR_CLIENT_REVOKED,
     KDC_ERR_PREAUTH_FAILED,
     KDC_ERR_WRONG_REALM,
     KRB_AP_ERR_SKEW,
@@ -41,7 +43,12 @@ from core.messages import (
     TGS_PRINCIPAL,
     TICKET_LIFETIME,
 )
-from kdc.database import audit_event, get_principal
+from kdc.database import (
+    audit_event,
+    get_principal,
+    record_auth_failure,
+    reset_auth_failures,
+)
 
 
 def handle_as_request(request: dict, db_cursor) -> dict:
@@ -56,6 +63,7 @@ def handle_as_request(request: dict, db_cursor) -> dict:
     request_nonce = request.get("nonce")
     encrypted_preauth = request.get("preauth")
     preauth_enctype = request.get("preauth_enctype", DEFAULT_ENCTYPE)
+    now = time.time()
 
     print(f"  [AS] Received AS_REQ from '{requested_principal}'")
 
@@ -66,7 +74,7 @@ def handle_as_request(request: dict, db_cursor) -> dict:
         return _error(KDC_ERR_WRONG_REALM,
                       f"KDC does not serve realm '{requested_realm}'.")
 
-    client_record = get_principal(db_cursor, requested_principal)
+    client_record = get_principal(db_cursor, requested_principal, include_disabled=True)
     if client_record is None:
         print(f"  [AS] ERROR: Client '{requested_principal}' not found.")
         audit_event(db_cursor, "AS", "as_req", requested_principal, "failure",
@@ -75,12 +83,34 @@ def handle_as_request(request: dict, db_cursor) -> dict:
                       f"Client principal '{requested_principal}' not found.")
 
     client_principal = client_record["principal_name"]
+    if client_record.get("disabled"):
+        print(f"  [AS] ERROR: Client '{client_principal}' is disabled.")
+        audit_event(db_cursor, "AS", "as_req", client_principal, "failure",
+                    {"error": KDC_ERR_CLIENT_REVOKED, "reason": "disabled"})
+        return _error(KDC_ERR_CLIENT_REVOKED, "Client principal is disabled.")
+
+    locked_until = float(client_record.get("locked_until") or 0)
+    if locked_until > now:
+        print(f"  [AS] ERROR: Client '{client_principal}' is locked until {locked_until}.")
+        audit_event(db_cursor, "AS", "as_req", client_principal, "failure",
+                    {
+                        "error": KDC_ERR_CLIENT_REVOKED,
+                        "reason": "lockout",
+                        "locked_until": locked_until,
+                    })
+        return _error(KDC_ERR_CLIENT_REVOKED,
+                      "Client principal is temporarily locked due to repeated authentication failures.")
+
     client_master_key = str_to_key(client_record["key"])
 
     if not encrypted_preauth:
         print("  [AS] ERROR: Missing pre-authentication data.")
+        failure = record_auth_failure(db_cursor, client_principal, now=now)
         audit_event(db_cursor, "AS", "preauth", client_principal, "failure",
-                    {"error": "missing_preauth"})
+                    {"error": "missing_preauth", **failure})
+        if failure["locked"]:
+            return _error(KDC_ERR_CLIENT_REVOKED,
+                          f"Client principal locked after {AUTH_FAILURE_THRESHOLD} failed pre-auth attempts.")
         return _error(KDC_ERR_PREAUTH_FAILED, "Missing pre-authentication data.")
     try:
         preauth_der = decrypt(encrypted_preauth, client_master_key, KEY_USAGE_AS_REQ_PA_ENC_TIMESTAMP)
@@ -88,22 +118,33 @@ def handle_as_request(request: dict, db_cursor) -> dict:
         preauth = decode_pa_enc_timestamp(preauth_der)
     except InvalidToken:
         print(f"  [AS] ERROR: Pre-authentication failed for '{client_principal}'.")
+        failure = record_auth_failure(db_cursor, client_principal, now=now)
         audit_event(db_cursor, "AS", "preauth", client_principal, "failure",
-                    {"error": "invalid_token"})
+                    {"error": "invalid_token", **failure})
+        if failure["locked"]:
+            return _error(KDC_ERR_CLIENT_REVOKED,
+                          f"Client principal locked after {AUTH_FAILURE_THRESHOLD} failed pre-auth attempts.")
         return _error(KDC_ERR_PREAUTH_FAILED, "Pre-authentication failed.")
 
     try:
         preauth_timestamp = float(preauth.get("ctime", 0))
     except (TypeError, ValueError):
+        failure = record_auth_failure(db_cursor, client_principal, now=now)
         audit_event(db_cursor, "AS", "preauth", client_principal, "failure",
-                    {"error": "invalid_timestamp"})
+                    {"error": "invalid_timestamp", **failure})
+        if failure["locked"]:
+            return _error(KDC_ERR_CLIENT_REVOKED,
+                          f"Client principal locked after {AUTH_FAILURE_THRESHOLD} failed pre-auth attempts.")
         return _error(KRB_AP_ERR_SKEW, "Invalid pre-authentication timestamp.")
 
-    now = time.time()
     if abs(now - preauth_timestamp) > MAX_CLOCK_SKEW:
         print("  [AS] ERROR: Pre-authentication clock skew too great.")
+        failure = record_auth_failure(db_cursor, client_principal, now=now)
         audit_event(db_cursor, "AS", "preauth", client_principal, "failure",
-                    {"error": KRB_AP_ERR_SKEW})
+                    {"error": KRB_AP_ERR_SKEW, **failure})
+        if failure["locked"]:
+            return _error(KDC_ERR_CLIENT_REVOKED,
+                          f"Client principal locked after {AUTH_FAILURE_THRESHOLD} failed pre-auth attempts.")
         return _error(KRB_AP_ERR_SKEW,
                       "Pre-authentication clock skew too great.")
 
@@ -188,6 +229,7 @@ def handle_as_request(request: dict, db_cursor) -> dict:
     # Encrypt using KEY_USAGE_AS_REP_ENCPART (3)
     encrypted_as_rep = encrypt(as_rep_der, client_master_key, KEY_USAGE_AS_REP_ENCPART)
 
+    reset_auth_failures(db_cursor, client_principal)
     audit_event(db_cursor, "AS", "tgt_issued", client_principal, "success",
                 {"server": tgs_principal_name, "endtime": endtime, "flags": flags})
     print(f"  [AS] TGT issued for '{client_principal}'. Lifetime: {TICKET_LIFETIME}s")
