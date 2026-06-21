@@ -8,8 +8,10 @@ database, keytab, or credential cache.
 from __future__ import annotations
 
 import importlib
+import base64
 import os
 import secrets
+import socket
 import sys
 import tempfile
 from pathlib import Path
@@ -36,6 +38,7 @@ def _fresh_modules(runtime: Path) -> SimpleNamespace:
         "core.replay_cache",
         "kdc.as_handler",
         "kdc.tgs_handler",
+        "app_server.service_server",
     ]
     modules = {}
     for name in module_names:
@@ -45,6 +48,7 @@ def _fresh_modules(runtime: Path) -> SimpleNamespace:
         database=modules["kdc.database"],
         as_handler=modules["kdc.as_handler"],
         tgs_handler=modules["kdc.tgs_handler"],
+        service_server=modules["app_server.service_server"],
     )
 
 
@@ -139,7 +143,11 @@ def _issue_tgt(mods: SimpleNamespace, conn, principal: str = "alice@DEMO.LOCAL")
     }
 
 
-def _make_tgs_req(tgt_bundle: dict, nonce: int | None = None) -> dict:
+def _make_tgs_req(
+    tgt_bundle: dict,
+    nonce: int | None = None,
+    service_principal: str | None = None,
+) -> dict:
     from core.asn1_codec import encode_authenticator
     from core.crypto import DEFAULT_ENCTYPE, KEY_USAGE_TGS_REQ_AUTH, encrypt
     from core.messages import APP_SERVICE_PRINCIPAL, REALM, TGS_PRINCIPAL, TGS_REQ
@@ -163,7 +171,7 @@ def _make_tgs_req(tgt_bundle: dict, nonce: int | None = None) -> dict:
     return {
         "msg_type": TGS_REQ,
         "realm": REALM,
-        "service_principal": APP_SERVICE_PRINCIPAL,
+        "service_principal": service_principal or APP_SERVICE_PRINCIPAL,
         "tgt": as_rep["tgt"],
         "tgt_service_principal": TGS_PRINCIPAL,
         "tgt_enctype": as_rep["tgt_enctype"],
@@ -172,6 +180,132 @@ def _make_tgs_req(tgt_bundle: dict, nonce: int | None = None) -> dict:
         "authenticator_enctype": DEFAULT_ENCTYPE,
         "nonce": nonce if nonce is not None else secrets.randbits(31),
     }
+
+
+def _issue_service_ticket(
+    mods: SimpleNamespace,
+    conn,
+    principal: str = "alice@DEMO.LOCAL",
+    password: str = "alice_password",
+    service_principal: str | None = None,
+) -> dict:
+    from core.asn1_codec import decode_enc_kdc_rep_part
+    from core.crypto import KEY_USAGE_TGS_REP_ENCPART, decrypt
+    from core.messages import TGS_REP
+
+    tgt_bundle = _issue_tgt(mods, conn, principal)
+    tgs_req = _make_tgs_req(tgt_bundle, service_principal=service_principal)
+    response = mods.tgs_handler.handle_tgs_request(tgs_req, conn.cursor())
+    if response.get("msg_type") != TGS_REP:
+        raise RuntimeError(f"TGS failed: {response}")
+
+    decrypted = decrypt(
+        response["encrypted_data"],
+        tgt_bundle["session_key"],
+        KEY_USAGE_TGS_REP_ENCPART,
+    )
+    enc_part = decode_enc_kdc_rep_part(decrypted, TGS_REP)
+    return {
+        "principal": principal,
+        "service_principal": response["service_principal"],
+        "response": response,
+        "enc_part": enc_part,
+        "session_key": enc_part["key"]["keyvalue"],
+    }
+
+
+def _make_ap_req(service_bundle: dict, service_principal: str | None = None) -> dict:
+    from core.asn1_codec import encode_authenticator
+    from core.crypto import DEFAULT_ENCTYPE, KEY_USAGE_AP_REQ_AUTH, encrypt
+    from core.messages import AP_REQ, REALM
+    from core.replay_cache import current_kerberos_time
+
+    _timestamp, ctime, cusec = current_kerberos_time()
+    authenticator = encrypt(
+        encode_authenticator(
+            {
+                "client_principal": service_bundle["principal"],
+                "realm": REALM,
+                "ctime": ctime,
+                "cusec": cusec,
+                "subkey": {
+                    "keytype": DEFAULT_ENCTYPE,
+                    "keyvalue": secrets.token_bytes(32),
+                },
+                "seq_number": secrets.randbits(30),
+            }
+        ),
+        service_bundle["session_key"],
+        KEY_USAGE_AP_REQ_AUTH,
+    )
+    response = service_bundle["response"]
+    return {
+        "msg_type": AP_REQ,
+        "service_principal": service_principal or response["service_principal"],
+        "service_ticket": response["service_ticket"],
+        "ticket_enctype": response["service_ticket_enctype"],
+        "ticket_kvno": response["service_ticket_kvno"],
+        "authenticator": authenticator,
+        "authenticator_enctype": DEFAULT_ENCTYPE,
+    }
+
+
+def _send_ap_req_to_app_server(mods: SimpleNamespace, ap_req: dict) -> dict:
+    from core.asn1_codec import decode_message, encode_message
+
+    token = base64.b64encode(encode_message(ap_req)).decode("ascii")
+    request_bytes = (
+        "GET / HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        f"Authorization: Negotiate {token}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii")
+
+    client_sock, server_sock = socket.socketpair()
+    client_sock.settimeout(5)
+    server_sock.settimeout(5)
+    try:
+        client_sock.sendall(request_bytes)
+        client_sock.shutdown(socket.SHUT_WR)
+        mods.service_server.NegotiateRequestHandler(
+            server_sock,
+            ("127.0.0.1", 0),
+            object(),
+        )
+        server_sock.close()
+        chunks = []
+        while True:
+            try:
+                chunk = client_sock.recv(65536)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        client_sock.close()
+        try:
+            server_sock.close()
+        except OSError:
+            pass
+
+    raw_response = b"".join(chunks)
+    head, _sep, body = raw_response.partition(b"\r\n\r\n")
+    lines = head.decode("iso-8859-1").split("\r\n")
+    status = int(lines[0].split()[1])
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        headers[key.strip().lower()] = value.strip()
+
+    token_msg = None
+    negotiate = headers.get("www-authenticate", "")
+    if negotiate.startswith("Negotiate "):
+        token_msg = decode_message(base64.b64decode(negotiate[len("Negotiate "):]))
+    return {"status": status, "headers": headers, "body": body, "token": token_msg}
 
 
 def scenario_normal_flow(mods: SimpleNamespace, conn) -> None:
@@ -254,8 +388,49 @@ def scenario_wrong_password(mods: SimpleNamespace, conn) -> None:
     _result("BLOCKED" if blocked else "UNEXPECTED", "AS cannot decrypt pre-auth with stored Kc")
 
 
+def scenario_account_lockout(mods: SimpleNamespace, conn) -> None:
+    from core.messages import AUTH_FAILURE_THRESHOLD
+
+    _banner("SCENARIO 3 - Defense: account lockout after repeated bad pre-auth")
+    _step("Attacker repeatedly sends bad AS_REQ for bob. KDC counts failed pre-auth attempts.")
+
+    response = None
+    for attempt in range(1, AUTH_FAILURE_THRESHOLD + 1):
+        as_req, _wrong_key = _make_as_req("bob@DEMO.LOCAL", "wrong_password")
+        response = mods.as_handler.handle_as_request(as_req, conn.cursor())
+        _msg(
+            f"Attacker -> AS attempt {attempt}",
+            "AS_REQ",
+            {
+                "client_principal": "bob@DEMO.LOCAL",
+                "preauth": "encrypted with wrong Kc",
+            },
+        )
+        _msg(
+            "AS -> Attacker",
+            response["msg_type"],
+            {"error_code": response.get("error_code")},
+        )
+
+    _step("Attacker now tries the real password while the principal is locked.")
+    valid_req, _client_key = _make_as_req("bob@DEMO.LOCAL", "bob_password")
+    valid_response = mods.as_handler.handle_as_request(valid_req, conn.cursor())
+    _msg(
+        "Client -> AS",
+        "AS_REQ with correct password",
+        {"client_principal": "bob@DEMO.LOCAL"},
+    )
+    _msg(
+        "AS -> Client",
+        valid_response["msg_type"],
+        {"error_code": valid_response.get("error_code")},
+    )
+    blocked = valid_response.get("error_code") == "KDC_ERR_CLIENT_REVOKED"
+    _result("BLOCKED" if blocked else "UNEXPECTED", "AS temporarily rejects even valid pre-auth until lockout expires")
+
+
 def scenario_tampered_tgt(mods: SimpleNamespace, conn) -> None:
-    _banner("SCENARIO 3 - Attack: tampered TGT")
+    _banner("SCENARIO 4 - Attack: tampered TGT")
     bundle = _issue_tgt(mods, conn)
     tgs_req = _make_tgs_req(bundle)
     tampered = bytearray(tgs_req["tgt"])
@@ -279,7 +454,7 @@ def scenario_tampered_tgt(mods: SimpleNamespace, conn) -> None:
 
 
 def scenario_replay_tgs_authenticator(mods: SimpleNamespace, conn) -> None:
-    _banner("SCENARIO 4 - Attack: replayed TGS authenticator")
+    _banner("SCENARIO 5 - Attack: replayed TGS authenticator")
     bundle = _issue_tgt(mods, conn)
     tgs_req = _make_tgs_req(bundle)
 
@@ -294,10 +469,128 @@ def scenario_replay_tgs_authenticator(mods: SimpleNamespace, conn) -> None:
     _result("BLOCKED" if blocked else "UNEXPECTED", "Replay cache already has this authenticator fingerprint")
 
 
+def scenario_ap_replay_authenticator(mods: SimpleNamespace, conn) -> None:
+    _banner("SCENARIO 6 - Attack: replayed AP authenticator at Application Server")
+    service_bundle = _issue_service_ticket(mods, conn)
+    ap_req = _make_ap_req(service_bundle)
+
+    _step("Legitimate client sends AP_REQ over HTTP Authorization: Negotiate.")
+    _msg(
+        "Client -> App Server",
+        "AP_REQ",
+        {
+            "service_principal": ap_req["service_principal"],
+            "ticket_kvno": ap_req["ticket_kvno"],
+            "service_ticket": f"EncryptedData len={len(ap_req['service_ticket'])}",
+            "authenticator": f"EncryptedData len={len(ap_req['authenticator'])}",
+        },
+    )
+    first = _send_ap_req_to_app_server(mods, ap_req)
+    _msg(
+        "App Server -> Client",
+        f"HTTP {first['status']}",
+        {"token": first["token"]["msg_type"] if first.get("token") else "none"},
+    )
+
+    _step("Attacker replays the exact same AP_REQ with the same authenticator ctime/cusec.")
+    second = _send_ap_req_to_app_server(mods, ap_req)
+    token = second.get("token") or {}
+    _msg(
+        "App Server -> Attacker",
+        f"HTTP {second['status']}",
+        {"error_code": token.get("error_code")},
+    )
+    blocked = second["status"] == 403 and token.get("error_code") == "KRB_AP_ERR_REPEAT"
+    _result("BLOCKED" if blocked else "UNEXPECTED", "Application Server replay cache rejects reused AP authenticator")
+
+
+def scenario_ap_tampered_service_ticket(mods: SimpleNamespace, conn) -> None:
+    _banner("SCENARIO 7 - Attack: tampered service ticket at Application Server")
+    service_bundle = _issue_service_ticket(mods, conn)
+    ap_req = _make_ap_req(service_bundle)
+    tampered = bytearray(ap_req["service_ticket"])
+    tampered[-1] ^= 0x01
+    ap_req["service_ticket"] = bytes(tampered)
+
+    _step("Attacker flips one byte in the encrypted service ticket before AP_REQ reaches the service.")
+    _msg(
+        "Attacker -> App Server",
+        "AP_REQ",
+        {
+            "service_principal": ap_req["service_principal"],
+            "tampered_service_ticket": f"cipher len={len(ap_req['service_ticket'])}, one byte modified",
+            "authenticator": f"EncryptedData len={len(ap_req['authenticator'])}",
+        },
+    )
+    response = _send_ap_req_to_app_server(mods, ap_req)
+    token = response.get("token") or {}
+    _msg(
+        "App Server -> Attacker",
+        f"HTTP {response['status']}",
+        {"error_code": token.get("error_code")},
+    )
+    blocked = response["status"] == 403 and token.get("error_code") == "KRB_AP_ERR_MODIFIED"
+    _result("BLOCKED" if blocked else "UNEXPECTED", "Service ticket decrypt/integrity check failed")
+
+
+def scenario_ap_wrong_service_with_multi_keytab(mods: SimpleNamespace, conn) -> None:
+    from core.keytab import write_keytab
+
+    _banner("SCENARIO 8 - Attack: wrong-service AP_REQ with multi-service keytab")
+    _step("Admin adds a second service key to the same keytab to prove keytab lookup is not the issue.")
+    mail_record = mods.database.upsert_principal(
+        conn,
+        "mailserver/localhost@DEMO.LOCAL",
+        "mailserver_secret",
+        "service",
+        groups="[]",
+    )
+    write_keytab(
+        mods.database.DEFAULT_KEYTAB_PATH,
+        mail_record["principal_name"],
+        mail_record["key"],
+        mail_record["kvno"],
+        mail_record["enctype"],
+        mail_record["realm"],
+    )
+    conn.commit()
+    _msg(
+        "Admin -> keytab",
+        "write_keytab",
+        {
+            "existing_service": "fileserver/localhost@DEMO.LOCAL",
+            "added_service": mail_record["principal_name"],
+            "keytab": mods.database.DEFAULT_KEYTAB_PATH,
+        },
+    )
+
+    service_bundle = _issue_service_ticket(mods, conn)
+    ap_req = _make_ap_req(service_bundle, service_principal="mailserver/localhost@DEMO.LOCAL")
+    _step("Attacker changes the outer AP_REQ service principal to mailserver but keeps a fileserver ticket.")
+    _msg(
+        "Attacker -> App Server",
+        "AP_REQ",
+        {
+            "outer_service_principal": ap_req["service_principal"],
+            "ticket_was_issued_for": service_bundle["service_principal"],
+            "keytab_contains": "fileserver and mailserver",
+        },
+    )
+    response = _send_ap_req_to_app_server(mods, ap_req)
+    token = response.get("token") or {}
+    _msg(
+        "App Server -> Attacker",
+        f"HTTP {response['status']}",
+        {"error_code": token.get("error_code")},
+    )
+    blocked = response["status"] == 403 and token.get("error_code") == "KRB_AP_ERR_MODIFIED"
+    _result("BLOCKED" if blocked else "UNEXPECTED", "A service ticket cannot be reused for another service")
+
+
 def scenario_key_rotation(mods: SimpleNamespace, conn) -> None:
     from core.messages import TGS_PRINCIPAL, TGS_REP
 
-    _banner("SCENARIO 5 - Key rotation: old TGT still valid by kvno")
+    _banner("SCENARIO 9 - Key rotation: old TGT still valid by kvno")
     bundle = _issue_tgt(mods, conn)
     old_kvno = bundle["as_rep"]["tgt_kvno"]
 
@@ -348,8 +641,12 @@ def main() -> int:
         try:
             scenario_normal_flow(mods, conn)
             scenario_wrong_password(mods, conn)
+            scenario_account_lockout(mods, conn)
             scenario_tampered_tgt(mods, conn)
             scenario_replay_tgs_authenticator(mods, conn)
+            scenario_ap_replay_authenticator(mods, conn)
+            scenario_ap_tampered_service_ticket(mods, conn)
+            scenario_ap_wrong_service_with_multi_keytab(mods, conn)
             scenario_key_rotation(mods, conn)
         finally:
             conn.close()

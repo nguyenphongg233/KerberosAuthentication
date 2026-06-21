@@ -7,7 +7,7 @@ Tài liệu này gom các lệnh kiểm tra và kịch bản demo nên dùng khi
 | Tầng | Lệnh | Mục đích |
 | --- | --- | --- |
 | Compile check | `python -m compileall core kdc app_server client tests scratch\test_cross_realm.py scratch\demo_security_flows.py scratch\demo_tgt_renewal.py` | Bắt lỗi cú pháp/import ở các module chính. |
-| Regression in-process | `python -m unittest discover -s tests -p "test_*.py" -v` | Kiểm 33 tests cho preauth, lockout, replay, AP, renewal, kvno/key rotation, keytab, ccache, `.env`, KAdmin Web API và E2E. |
+| Regression in-process | `python -m unittest discover -s tests -p "test_*.py" -v` | Kiểm 34 tests cho preauth, lockout, replay, AP, protected service catalog, renewal, kvno/key rotation, keytab, ccache, `.env`, KAdmin Web API và E2E. |
 | Verbose security-flow demo | `python scratch/demo_security_flows.py` | In rõ message nào được gửi, attacker tác động gì, hệ thống trả lỗi/chặn ra sao. |
 | Verbose TGT renewal demo | `python scratch/demo_tgt_renewal.py` | In riêng luồng TGT hết hạn nhưng còn `renew_till`, renew thành công rồi xin service ticket. |
 | Smoke HTTP/cross-realm | `python scratch/test_cross_realm.py` | Chạy KDC + App Server bằng temp runtime, kiểm AS/TGS/AP qua HTTP Negotiate-style và cross-realm demo. |
@@ -50,7 +50,7 @@ Mỗi cơ chế chính có một file test riêng, có thể chạy lẻ hoặc 
 | `tests/test_keytab_kvno.py` | Keytab exact kvno và highest fallback | Chứng minh App Server có thể chọn đúng service key version. |
 | `tests/test_ccache_metadata.py` | Ccache metadata và expired service ticket | Chứng minh cache giữ metadata quan trọng và tự bỏ ticket hết hạn. |
 | `tests/test_asn1_message_format.py` | ASN.1 application tags và AS-REQ round-trip | Chứng minh wire format bám đúng lớp message Kerberos chính. |
-| `tests/test_application_server_ap.py` | AP replay, wrong service, tampered service ticket, wrong-service khi keytab có nhiều service key | Chứng minh Application Server chặn replay và ticket không dùng được sai ngữ cảnh. |
+| `tests/test_application_server_ap.py` | AP hợp lệ trả protected file catalog, user/admin visibility, AP replay, wrong service, tampered service ticket, wrong-service khi keytab có nhiều service key | Chứng minh Application Server vừa trả tài nguyên bảo vệ sau xác thực, vừa chặn replay và ticket sai ngữ cảnh. |
 | `tests/test_tgt_renewal.py` | TGT renewal success/fail | Chứng minh `renew_till` kiểm soát việc gia hạn TGT. |
 | `tests/test_client_tgt_renewal.py` | `client_app.renew_tgt_exchange()` renew cache rồi xin service ticket | Chứng minh renewal chạy được qua client-level flow, không chỉ gọi TGS handler trực tiếp. |
 | `tests/test_kadmin_cli.py` | `cpw`, `ktadd --all-versions`, audit | Chứng minh key rotation có kvno/key history và keytab export đủ version. |
@@ -82,8 +82,12 @@ Các scenario hiện có:
 | --- | --- | --- |
 | Normal AS -> TGS flow | Client gửi `AS_REQ`, nhận `AS_REP`, gửi `TGS_REQ`, nhận `TGS_REP` | `ALLOWED` |
 | Wrong password / forged pre-auth | Attacker mã hóa `PA-ENC-TIMESTAMP` bằng key derive từ password sai | `KDC_ERR_PREAUTH_FAILED`, `BLOCKED` |
+| Account lockout | Attacker gửi sai pre-auth nhiều lần rồi thử lại bằng password đúng | `KDC_ERR_CLIENT_REVOKED`, `BLOCKED` |
 | Tampered TGT | Attacker sửa 1 byte trong encrypted TGT | `KRB_AP_ERR_MODIFIED`, `BLOCKED` |
 | Replayed TGS authenticator | Attacker gửi lại nguyên `TGS_REQ` cũ với cùng `ctime/cusec` | `KRB_AP_ERR_REPEAT`, `BLOCKED` |
+| Replayed AP authenticator | Attacker gửi lại nguyên `AP_REQ` cũ qua HTTP Negotiate | HTTP `403`, `KRB_AP_ERR_REPEAT`, `BLOCKED` |
+| Tampered service ticket | Attacker sửa 1 byte trong encrypted service ticket | HTTP `403`, `KRB_AP_ERR_MODIFIED`, `BLOCKED` |
+| Wrong-service AP-REQ | Keytab có cả `fileserver` và `mailserver`, attacker đổi outer service sang `mailserver` nhưng giữ ticket của `fileserver` | HTTP `403`, `KRB_AP_ERR_MODIFIED`, `BLOCKED` |
 | Key rotation | Admin rotate `krbtgt` key sau khi TGT đã cấp | TGT cũ còn hạn vẫn `ALLOWED` nhờ `kvno` và `principal_keys` |
 
 ## Verbose TGT Renewal Demo
@@ -107,14 +111,14 @@ Script này in rõ:
 
 | Demo | Cách chạy | Kỳ vọng |
 | --- | --- | --- |
-| Happy path local realm | Manual demo với `alice/alice_password` | Client hoàn tất AS -> TGS -> AP, nhận AP-REP và nội dung admin. |
+| Happy path local realm | Manual demo với `alice/alice_password` | Client hoàn tất AS -> TGS -> AP, nhận AP-REP và protected file catalog có `LIST_PROTECTED_FILES`. |
 | Wrong password | Manual demo với `alice/wrong_password`, `python tests/test_e2e_subprocess.py` hoặc regression test | Dừng ở AS, trả `KDC_ERR_PREAUTH_FAILED`, không đi tiếp TGS/AP. |
 | Cross-realm | `python scratch/test_cross_realm.py` | `alice@DEMO.LOCAL` lấy ticket cho `fileserver/localhost@PARTNER.LOCAL`. |
 | Replay protection | `python tests/test_replay_protection.py` | Request thứ hai với cùng authenticator bị `KRB_AP_ERR_REPEAT`. |
-| AP replay/wrong service | `python tests/test_application_server_ap.py` | Replay tại Application Server bị `KRB_AP_ERR_REPEAT`; ticket bị sửa hoặc dùng sai service bị `KRB_AP_ERR_MODIFIED`, kể cả khi keytab chứa nhiều service key. |
+| AP replay/wrong service | `python tests/test_application_server_ap.py` | AP hợp lệ nhận protected catalog; replay tại Application Server bị `KRB_AP_ERR_REPEAT`; ticket bị sửa hoặc dùng sai service bị `KRB_AP_ERR_MODIFIED`, kể cả khi keytab chứa nhiều service key. |
 | TGT renewal | `python scratch/demo_tgt_renewal.py` | TGT hết hạn nhưng còn `renew_till` được renew và dùng tiếp để xin service ticket. |
 | Client-level renewal | `python tests/test_client_tgt_renewal.py` | Client gọi `renew_tgt_exchange()`, cập nhật cache và dùng TGT mới cho TGS Exchange. |
-| Kerberos-style CLI | `python -m client.kinit alice`, `python -m client.klist`, `python -m client.kvno fileserver`, `python -m client.kaccess fileserver`, `python -m client.kdestroy` | Chứng minh thao tác người dùng cơ bản: lấy TGT, xem cache, xin service ticket, truy cập service và xóa cache. |
+| Kerberos-style CLI | `python -m client.kinit alice`, `python -m client.klist`, `python -m client.kvno fileserver`, `python -m client.kaccess fileserver`, `python -m client.kdestroy` | Chứng minh thao tác người dùng cơ bản: lấy TGT, xem cache, xin service ticket, truy cập service, nhận protected file catalog và xóa cache. |
 | Key rotation | Regression test `test_old_tgt_survives_tgs_key_rotation` | TGT cũ vẫn dùng được nhờ `principal_keys` và `kvno`. |
 | KAdmin Web API | `python tests/test_kadmin_web_api.py` | REST API add/list/toggle/delete principal và ghi audit log. |
 | Account lockout | `python tests/test_as_preauth.py` | Sau nhiều lần pre-auth fail, AS trả `KDC_ERR_CLIENT_REVOKED` cho tới khi hết lockout. |

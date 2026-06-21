@@ -6,6 +6,7 @@ import socket
 import sys
 import time
 import base64
+import html
 import urllib.request
 import urllib.error
 
@@ -63,6 +64,20 @@ from core.replay_cache import current_kerberos_time
 
 cache = CredentialCache()
 client_principal_global = None
+
+
+def _extract_service_response_text(response_body: str) -> str | None:
+    start = response_body.find("<pre>")
+    if start >= 0:
+        start += len("<pre>")
+        end = response_body.find("</pre>", start)
+        if end >= 0:
+            return html.unescape(response_body[start:end]).strip()
+
+    stripped = response_body.strip()
+    if stripped and "<html" not in stripped.lower():
+        return stripped
+    return None
 
 
 def _ticket_enctype(metadata: dict, fallback: int = DEFAULT_ENCTYPE) -> int:
@@ -598,19 +613,26 @@ def phase3_ap_exchange(service_name: str) -> bool:
     else:
         print("         Server Seq:    None")
 
-    # Extract clean welcome text message if returned in JSON (or fallback for DER)
-    service_msg = response.get("service_data")
+    # Extract clean protected service output from the HTTP body. AP_REP is for
+    # mutual authentication; application data is returned outside the AP_REP.
+    service_msg = _extract_service_response_text(service_data)
+    if not service_msg:
+        service_msg = response.get("service_data")
     if not service_msg:
         # Reconstruct for UI display if needed
         if "alice" in client_principal_global.lower():
             service_msg = (
-                f"[Admin Access Granted] Welcome to the File Server admin portal, {client_principal_global}! "
-                f"You have administrator privileges. Group membership: ['users', 'admins']."
+                "Protected File Server access granted\n"
+                f"client_principal: {client_principal_global}\n"
+                "access_level: admin\n"
+                "authorized_action: LIST_PROTECTED_FILES"
             )
         else:
             service_msg = (
-                f"[User Access Granted] Welcome to the File Server, {client_principal_global}! "
-                f"You have standard user access. Group membership: ['users']."
+                "Protected File Server access granted\n"
+                f"client_principal: {client_principal_global}\n"
+                "access_level: standard-user\n"
+                "authorized_action: LIST_PROTECTED_FILES"
             )
 
     print(f"\n{'='*50}")

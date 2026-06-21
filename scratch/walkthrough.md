@@ -1,127 +1,114 @@
-# Demo Scenarios Walkthrough — KerberosAuthentication
+# Demo Walkthrough Cho Bao Cao
 
-## Tổng Quan
+Thu muc `scratch/` dung de chay demo co log ro rang, khong dung runtime that cua repo. Cac script tao temp database/keytab/ccache rieng, vi vay co the chay nhieu lan ma khong lam hong `kdc/database.db`, keytab hoac credential cache dang demo thu cong.
 
-Đã tạo file [demo_all_features.py](file:///d:/OneDrive/Documents/KerberosAuthentication/scratch/demo_all_features.py) chứa **17 kịch bản demo** bao phủ toàn bộ tính năng đã triển khai trong project. Script chạy **in-process** (không cần mở 3 terminal), sử dụng temp runtime riêng, không ảnh hưởng database/keytab của repo.
-
-## Cách Chạy
+## Lenh Nen Chay Khi Bao Cao
 
 ```powershell
-python scratch/demo_all_features.py
+python scratch/demo_security_flows.py
+python scratch/demo_tgt_renewal.py
+python scratch/test_cross_realm.py
 ```
 
-> [!NOTE]
-> Script tự tạo temp database + keytab + ccache riêng. Không cần khởi động KDC hay App Server.
+Neu can kiem tra nhanh truoc khi nop:
 
----
-
-## 17 Kịch Bản Demo
-
-### Nhóm 1: Ba Pha Chính (AS → TGS → AP)
-
-| # | Demo | Tính năng RFC 4120 | Kỳ vọng |
-|---|---|---|---|
-| 1 | **Happy Path** | AS Exchange + TGS Exchange + AP Exchange | alice hoàn tất cả 3 pha, nhận service ticket có authorization data (admin) |
-
-### Nhóm 2: Xử Lý Lỗi & Bảo Mật
-
-| # | Demo | Tính năng RFC 4120 | Kỳ vọng |
-|---|---|---|---|
-| 2 | **Wrong Password** | Pre-authentication (Section 3.1) | `KDC_ERR_PREAUTH_FAILED` — chứng minh password không gửi qua mạng |
-| 3 | **Unknown Principal** | Principal database (Section 3.1.2) | `KDC_ERR_C_PRINCIPAL_UNKNOWN` |
-| 4 | **Replay Detection** | Replay cache (Section 3.2.3) | Request thứ 2 bị `KRB_AP_ERR_REPEAT` |
-| 8 | **Unknown Service** | Service lookup (Section 3.3.2) | `KDC_ERR_S_PRINCIPAL_UNKNOWN` |
-| 14 | **Clock Skew** | Clock skew check (Section 3.1.2) | Timestamp 10 phút trước bị `KRB_AP_ERR_SKEW` |
-| 16 | **Ticket Tampering** | AES-CTS-HMAC-SHA1-96 (RFC 3961) | Cố tình sửa đổi 1 byte của TGT bị từ chối với lỗi `KRB_AP_ERR_MODIFIED` (sai MAC/Ciphertext) |
-| 17 | **Forged Authenticator**| Session Key Validation | Kẻ tấn công giả mạo Authenticator bằng random key bị từ chối với lỗi `KRB_AP_ERR_MODIFIED` |
-
-### Nhóm 3: Ticket Flags & Renewal
-
-| # | Demo | Tính năng RFC 4120 | Kỳ vọng |
-|---|---|---|---|
-| 5 | **TGT Renewal** | Renewable tickets (Section 2.3) | TGS cấp TGT mới với `endtime` mở rộng |
-
-### Nhóm 4: Key Management & Rotation
-
-| # | Demo | Tính năng RFC 4120 | Kỳ vọng |
-|---|---|---|---|
-| 6 | **Key Rotation** | Key version number (kvno) | TGT cũ vẫn dùng được sau khi rotate key nhờ `principal_keys` history |
-| 11 | **Key History DB** | `principal_keys` table | 3+ versions lưu trữ, lookup by exact kvno hoạt động |
-| 12 | **Idempotent Init** | Database migration | `init_database()` không reset kvno đã thay đổi |
-
-### Nhóm 5: Authorization & RBAC
-
-| # | Demo | Tính năng RFC 4120 | Kỳ vọng |
-|---|---|---|---|
-| 7 | **RBAC (bob vs alice)** | Authorization Data (Section 5.2.6) | alice có `admins` group, bob chỉ có `users` → phân quyền khác nhau tại App Server |
-
-### Nhóm 6: Keytab & Credential Cache
-
-| # | Demo | Tính năng | Kỳ vọng |
-|---|---|---|---|
-| 9 | **Keytab Multi-Version** | MIT Keytab v2 binary | 3 kvno entries, exact kvno lookup + highest fallback |
-| 10 | **Ccache Persistence** | MIT ccache v4 binary | `ticket_kvno` + `ticket_enctype` vẫn đúng sau reload |
-
-### Nhóm 7: Encoding & Handshake
-
-| # | Demo | Tính năng | Kỳ vọng |
-|---|---|---|---|
-| 13 | **ASN.1/DER Roundtrip** | ASN.1 encoding (Section 5) | Encode → decode KRB_ERROR + AS_REQ giữ nguyên nội dung |
-| 15 | **Subkey & Seq Number** | AP Exchange handshake (Section 3.2) | Authenticator chứa subkey + seq-number, decrypt thành công |
-
----
-
-## So Sánh Với Test Hiện Có
-
-| Test hiện có | Demo mới bổ sung |
-|---|---|
-| [test_kerberos_regression.py](file:///d:/OneDrive/Documents/KerberosAuthentication/tests/test_kerberos_regression.py): 6 test cases | [demo_all_features.py](file:///d:/OneDrive/Documents/KerberosAuthentication/scratch/demo_all_features.py): 17 scenarios |
-| ❌ Không có happy path end-to-end | ✅ Demo 1: Full 3-phase path |
-| ❌ Không demo RBAC bob vs alice | ✅ Demo 7: So sánh groups |
-| ❌ Không demo clock skew | ✅ Demo 14: Timestamp cũ bị reject |
-| ❌ Không demo ASN.1 roundtrip | ✅ Demo 13: Encode/decode cycle |
-| ❌ Không demo subkey/seq-number | ✅ Demo 15: Handshake fields |
-| ❌ Không demo TGT renewal | ✅ Demo 5: Renew kdc-options |
-| ❌ Không demo unknown service | ✅ Demo 8: Service principal not found |
-| ❌ Chưa mô phỏng tấn công (Ticket Tampering / Forged Authenticator) | ✅ Demo 16, 17: Phản hồi lỗi `KRB_AP_ERR_MODIFIED` |
-
----
-
-## Output Mẫu Kỳ Vọng
-
-```
-██████████████████████████████████████████████████████████████████████
-  KERBEROS V5 COMPREHENSIVE DEMO — ALL FEATURES
-  Dựa trên RFC 4120 / RFC 3961 / RFC 3962
-██████████████████████████████████████████████████████████████████████
-
-======================================================================
-  Demo 1: Happy Path — AS → TGS → AP (alice@DEMO.LOCAL)
-======================================================================
-  ▸ Phase 1: AS Exchange — alice xin TGT
-    ✅ PASS: AS_REP received with TGT
-    ✅ PASS: TGT has 'initial' flag
-    ✅ PASS: TGT has 'pre_authent' flag
-    ✅ PASS: TGT has 'renewable' flag
-  ▸ Phase 2: TGS Exchange — alice xin Service Ticket cho fileserver
-    ✅ PASS: TGS_REP received for 'fileserver/localhost@DEMO.LOCAL'
-  ▸ Phase 3: AP Exchange — alice truy cập fileserver
-    ✅ PASS: Service ticket contains correct client principal
-    ✅ PASS: alice has admin group in ticket authorization data
-    ✅ PASS: Complete AS→TGS→AP path succeeded
-
-...
-
-======================================================================
-  SUMMARY: 35/35 passed, 0/35 failed
-  🎉 ALL DEMOS PASSED!
-======================================================================
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-## Thứ Tự Demo Khuyến Nghị Khi Báo Cáo
+## Demo Truy Cap Service Sau Khi Co Ve
 
-1. **Chạy regression test** trước: `python -m unittest discover -s tests -p "test_*.py" -v`
-2. **Chạy demo toàn bộ**: `python scratch/demo_all_features.py`
-3. **Chạy cross-realm smoke**: `python scratch/test_cross_realm.py`
-4. **Demo thủ công 3 terminal** nếu cần interaction trực quan
-5. Mở **KAdmin Web** cuối cùng để xem principal/audit log
+Khi chup anh cho report, nen co mot anh rieng the hien client dung service ticket de truy cap FileServer va nhan protected resource:
+
+```powershell
+python -m client.kinit alice
+python -m client.kvno fileserver
+python -m client.kaccess fileserver
+```
+
+Phan can chup trong output:
+
+```text
+[Client] Mutual authentication verified
+SERVICE RESPONSE (HTML/Text)
+Protected File Server access granted
+authorized_action: LIST_PROTECTED_FILES
+available_resources:
+- project-overview.txt
+- kdc-audit-log.txt
+```
+
+Neu chay lai `kaccess` khi cache con han, client dung ve trong cache de truy cap service ma khong can nhap lai password.
+
+## `demo_security_flows.py`
+
+Day la script quan trong nhat de dua output vao bao cao. Moi scenario in theo mau:
+
+```text
+[STEP] attacker/client lam gi
+[MSG]  ben gui -> ben nhan: message
+[RESULT] BLOCKED/ALLOWED: ket luan
+```
+
+Scenario hien co:
+
+| Scenario | Tac dong / message | Ket qua can chup vao bao cao |
+| --- | --- | --- |
+| Normal AS -> TGS flow | Client gui `AS_REQ`, nhan `AS_REP`, gui `TGS_REQ`, nhan `TGS_REP` | `ALLOWED`, `Kc_tgs` duoc thiet lap |
+| Wrong password / forged pre-auth | Attacker ma hoa `PA-ENC-TIMESTAMP` bang key sai | `KDC_ERR_PREAUTH_FAILED`, `BLOCKED` |
+| Account lockout | Gui sai pre-auth nhieu lan roi thu password dung | `KDC_ERR_CLIENT_REVOKED`, `BLOCKED` |
+| Tampered TGT | Sua 1 byte trong encrypted TGT | `KRB_AP_ERR_MODIFIED`, `BLOCKED` |
+| Replayed TGS authenticator | Gui lai nguyen `TGS_REQ` cu | `KRB_AP_ERR_REPEAT`, `BLOCKED` |
+| Replayed AP authenticator | Gui lai nguyen `AP_REQ` qua HTTP Negotiate | HTTP `403`, `KRB_AP_ERR_REPEAT`, `BLOCKED` |
+| Tampered service ticket | Sua 1 byte trong encrypted service ticket | HTTP `403`, `KRB_AP_ERR_MODIFIED`, `BLOCKED` |
+| Wrong-service AP-REQ | Keytab co `fileserver` va `mailserver`, attacker doi outer service sang `mailserver` nhung giu ticket cua `fileserver` | HTTP `403`, `KRB_AP_ERR_MODIFIED`, `BLOCKED` |
+| Key rotation | Rotate `krbtgt` key sau khi TGT da cap | TGT cu con han van `ALLOWED` nho `kvno` va `principal_keys` |
+
+## `demo_tgt_renewal.py`
+
+Dung khi can trinh bay rieng co che renew TGT:
+
+```text
+[MSG] Client cache: Expired renewable TGT
+[MSG] Client -> TGS: TGS_REQ renew
+[MSG] TGS -> Client: TGS_REP renewed TGT
+[RESULT] ALLOWED: Expired TGT was renewed because renew_till has not passed
+[RESULT] ALLOWED: Renewed TGT can be used for normal TGS exchange
+```
+
+Nen dua vao bao cao cac field: `old_endtime`, `new_endtime`, `renew_till`, `service_principal`.
+
+## `test_cross_realm.py`
+
+Dung de chung minh full flow co subprocess KDC/App Server va cross-realm:
+
+| Case | Y nghia |
+| --- | --- |
+| `charlie@PARTNER.LOCAL -> fileserver/localhost@PARTNER.LOCAL` | User trong realm PARTNER truy cap service PARTNER thanh cong |
+| `alice@DEMO.LOCAL -> fileserver/localhost@PARTNER.LOCAL` | Client realm DEMO lay cross-realm TGT roi lay service ticket realm PARTNER |
+
+Output can chup:
+
+```text
+[Client] Step 1: Requesting Cross-Realm TGT for 'krbtgt/PARTNER.LOCAL@DEMO.LOCAL'
+[Client] Cross-Realm TGT obtained successfully
+[Client] Service Ticket for 'fileserver/localhost@PARTNER.LOCAL' cached successfully via Cross-Realm Trust
+[Client] Mutual authentication verified
+[Smoke] SUCCESS: cross-realm smoke test passed.
+```
+
+## Nen Dua Vao Report Nhu The Nao
+
+Khong nen dan toan bo log. Moi co che chi can 5-10 dong dai dien:
+
+1. Lenh da chay.
+2. Message bi tac dong.
+3. Error code hoac HTTP status.
+4. Dong `[RESULT] BLOCKED/ALLOWED`.
+
+Thu tu de trong bao cao:
+
+1. Bang tong hop `unittest`: `Ran 34 tests ... OK`.
+2. Trich `demo_security_flows.py` cho wrong password, tampered TGT, replay TGS, replay AP, wrong-service AP.
+3. Trich `demo_tgt_renewal.py` cho TGT renewal.
+4. Trich `test_cross_realm.py` cho cross-realm.

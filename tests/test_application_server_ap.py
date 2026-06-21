@@ -22,6 +22,29 @@ class ApplicationServerAPTests(KerberosTestCase):
         self.assertEqual(200, response["status"], response["body"])
         self.assertIsNotNone(response["token"])
         self.assertEqual(AP_REP, response["token"]["msg_type"])
+        body = response["body"].decode("utf-8")
+        self.assertIn("Protected File Server access granted", body)
+        self.assertIn("authorized_action: LIST_PROTECTED_FILES", body)
+        self.assertIn("project-overview.txt", body)
+        self.assertIn("kdc-audit-log.txt", body)
+        self.assertIn(b"Protected File Catalog", response["body"])
+
+    def test_non_admin_user_gets_only_user_visible_resources(self) -> None:
+        conn = self.init_database()
+        service_bundle = self.issue_service_ticket(
+            conn,
+            principal="bob@DEMO.LOCAL",
+            password="bob_password",
+        )
+        ap_req = self.make_ap_req(service_bundle)
+
+        response = self.send_ap_req_to_app_server(ap_req)
+        self.assertEqual(200, response["status"], response["body"])
+        body = response["body"].decode("utf-8")
+        self.assertIn("access_level: standard-user", body)
+        self.assertIn("project-overview.txt", body)
+        self.assertIn("admin_resources: hidden", body)
+        self.assertNotIn("kdc-audit-log.txt", body)
 
     def test_ap_replayed_authenticator_rejected(self) -> None:
         from core.messages import AP_REP, KRB_AP_ERR_REPEAT

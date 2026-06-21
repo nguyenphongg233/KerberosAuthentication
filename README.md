@@ -118,7 +118,7 @@ Các module chính:
 - `kdc/kadmin_web.py`: web dashboard và REST API quản trị principal/audit log trên `127.0.0.1:8088`.
 - `kdc/as_handler.py`: AS Exchange.
 - `kdc/tgs_handler.py`: TGS Exchange.
-- `app_server/service_server.py`: AP Exchange và service mock.
+- `app_server/service_server.py`: AP Exchange và service mock trả protected file catalog theo group trong service ticket.
 - `core/crypto.py`: nfold, derive-random (DK/DR), CBC-CTS mode, HMAC-SHA1-96, PBKDF2-HMAC-SHA1, key derivation.
 - `core/principal.py`: chuẩn hóa realm/principal.
 - `core/keytab.py`: đọc/ghi keytab nhị phân chuẩn MIT Keytab v2.
@@ -238,7 +238,7 @@ Replay cache không lưu khóa; nó chỉ lưu fingerprint authenticator đã d�
 | --- | --- | --- |
 | Client ↔ KDC/AS | `AS-REQ`, `AS-REP`, `KRB-ERROR` qua `KDC_HOST:KDC_PORT` | Client xin TGT. |
 | Client ↔ KDC/TGS | `TGS-REQ`, `TGS-REP`, `KRB-ERROR` qua `KDC_HOST:KDC_PORT` | Client dùng TGT để xin service ticket. |
-| Client ↔ Application Server | HTTP `WWW-Authenticate`/`Authorization: Negotiate` chứa raw `AP-REQ`/`AP-REP` DER | Client dùng service ticket để truy cập service; chưa bọc token SPNEGO/GSS-API đầy đủ. |
+| Client ↔ Application Server | HTTP `WWW-Authenticate`/`Authorization: Negotiate` chứa raw `AP-REQ`/`AP-REP` DER | Client dùng service ticket để truy cập service; khi AP-REQ hợp lệ, FileServer trả protected file catalog theo group trong ticket. Chưa bọc token SPNEGO/GSS-API đầy đủ. |
 | AS ↔ TGS | Nội bộ trong process KDC | Không có socket riêng giữa AS và TGS trong demo. |
 | KDC ↔ Application Server | Không có TCP runtime trực tiếp | Trust dựa trên service key: KDC export keytab, Application Server đọc keytab. |
 
@@ -256,34 +256,66 @@ Giới hạn: project chưa có TLS/mTLS cho TCP channel. ASN.1/DER chỉ là đ
 
 ## Cấu Hình
 
+Repo tự đọc file `.env` ở thư mục gốc khi import các module `core.*`. Shell environment vẫn có ưu tiên cao hơn `.env`, nên test/subprocess có thể override từng biến khi cần. File `.env` là cấu hình local và đã được ignore; `.env.example` là template có thể commit/chia sẻ.
+
 | Biến | Default | Ý nghĩa |
 | --- | --- | --- |
 | `KRB_REALM` | `DEMO.LOCAL` | Realm mặc định |
 | `APP_SERVICE_NAME` | `fileserver` | Service component trong service principal |
 | `APP_SERVER_NAME` | `localhost` | Host component trong service principal |
-| `KDC_HOST` | `127.0.0.1` | Địa chỉ KDC |
+| `KDC_BIND_HOST` | Giá trị `KDC_HOST` | Địa chỉ KDC bind/listen |
+| `KDC_HOST` | `127.0.0.1` | Địa chỉ client dùng để kết nối KDC |
 | `KDC_PORT` | `4321` | Port KDC |
 | `KDC_DB_PATH` | `kdc/database.db` | SQLite database của KDC |
-| `APP_SERVER_HOST` | `127.0.0.1` | Địa chỉ Application Server |
+| `APP_SERVER_BIND_HOST` | Giá trị `APP_SERVER_HOST` | Địa chỉ Application Server bind/listen |
+| `APP_SERVER_HOST` | `127.0.0.1` | Địa chỉ client dùng để kết nối Application Server |
 | `APP_SERVER_PORT` | `8000` | Port Application Server |
 | `KRB_WIRE_FORMAT` | `der` | `der` để dùng ASN.1/DER, `json` để debug legacy |
 | `APP_SERVER_KEYTAB` | `app_server/<APP_SERVICE_NAME>.keytab` | Keytab của Application Server |
 | `KRB5CCNAME` | `client/krb5cc_demo` | Credential cache file |
 | `KRB_REPLAY_CACHE` | `kdc/database.db` | Replay cache SQLite |
+| `KADMIN_WEB_HOST` | `127.0.0.1` | Địa chỉ bind của KAdmin Web |
+| `KADMIN_WEB_PORT` | `8088` | Port KAdmin Web |
 
-Nếu port mặc định bị chiếm:
+Chạy local một máy: giữ nguyên `.env` mặc định rồi mở ba terminal:
 
 ```powershell
-$env:KDC_PORT = "4322"
 python -m kdc.kdc_server
-```
-
-Client terminal phải set cùng biến:
-
-```powershell
-$env:KDC_PORT = "4322"
+python -m app_server.service_server
 python -m client.client_app
 ```
+
+Nếu port mặc định bị chiếm, sửa trực tiếp trong `.env`:
+
+```dotenv
+KDC_PORT=4322
+APP_SERVER_PORT=8001
+```
+
+Chạy trên 3 máy cùng LAN:
+
+```dotenv
+# Trên máy KDC
+KDC_BIND_HOST=0.0.0.0
+KDC_HOST=<IP_MAY_KDC>
+```
+
+```dotenv
+# Trên máy Application Server
+KDC_HOST=<IP_MAY_KDC>
+APP_SERVER_BIND_HOST=0.0.0.0
+APP_SERVER_HOST=<IP_MAY_APP_SERVER>
+APP_SERVER_NAME=<IP_MAY_APP_SERVER_HOAC_HOSTNAME>
+```
+
+```dotenv
+# Trên máy Client
+KDC_HOST=<IP_MAY_KDC>
+APP_SERVER_HOST=<IP_MAY_APP_SERVER>
+APP_SERVER_NAME=<GIONG_GIA_TRI_DA_DUNG_KHI_TAO_KEYTAB>
+```
+
+Lưu ý: `APP_SERVER_NAME` là một phần của service principal, ví dụ `fileserver/192.168.1.20@DEMO.LOCAL`. Nếu đổi giá trị này thì phải khởi tạo/export lại keytab tương ứng và dùng cùng giá trị ở KDC, Application Server và Client.
 
 ## Luồng Giao Thức
 
@@ -393,10 +425,10 @@ Repo hiện có ba lớp kiểm thử chính:
 | Lớp | File / lệnh | Mục tiêu |
 | --- | --- | --- |
 | Regression in-process | `python -m unittest discover -s tests -p "test_*.py" -v` | Kiểm các hành vi bảo mật cốt lõi mà không cần mở port. |
-| Verbose security-flow demo | `python scratch/demo_security_flows.py` | In rõ message gửi đi, attacker tác động gì, KDC/TGS chặn hoặc cho qua ra sao. |
+| Verbose security-flow demo | `python scratch/demo_security_flows.py` | In rõ message gửi đi, attacker tác động gì, KDC/TGS/App Server chặn hoặc cho qua ra sao. |
 | Smoke HTTP/cross-realm | `python scratch/test_cross_realm.py` | Chạy KDC + Application Server + Client bằng temp runtime để kiểm luồng tích hợp. |
 
-Regression tests hiện có 32 case, được tách theo từng cơ chế để có thể chạy riêng từng file:
+Regression tests hiện có 33 case, được tách theo từng cơ chế để có thể chạy riêng từng file:
 
 | File | Cơ chế kiểm |
 | --- | --- |
@@ -409,11 +441,12 @@ Regression tests hiện có 32 case, được tách theo từng cơ chế để 
 | `tests/test_keytab_kvno.py` | Keytab chọn đúng service key theo `principal`/`kvno`/`enctype`, có fallback kvno cao nhất. |
 | `tests/test_ccache_metadata.py` | Ccache reload vẫn giữ metadata `ticket_kvno`/`ticket_enctype` và bỏ service ticket hết hạn. |
 | `tests/test_asn1_message_format.py` | Kiểm application tag ASN.1/DER và round-trip `AS_REQ`. |
-| `tests/test_application_server_ap.py` | AP-REQ hợp lệ, replay AP authenticator, service sai, service ticket bị sửa và wrong-service khi keytab chứa nhiều service key. |
+| `tests/test_application_server_ap.py` | AP-REQ hợp lệ trả protected file catalog, phân quyền user/admin, replay AP authenticator, service sai, service ticket bị sửa và wrong-service khi keytab chứa nhiều service key. |
 | `tests/test_tgt_renewal.py` | TGT hết hạn nhưng còn `renew_till` được renew; quá `renew_till` thì bị từ chối. |
 | `tests/test_client_tgt_renewal.py` | Client gọi `client_app.renew_tgt_exchange()`, cập nhật ccache rồi dùng TGT mới để xin service ticket. |
 | `tests/test_kadmin_cli.py` | `kadmin cpw` tăng kvno, giữ key history/audit; `ktadd --all-versions` export đủ key versions. |
 | `tests/test_kadmin_web_api.py` | KAdmin Web REST API add/list/toggle/delete principal và đọc audit log. |
+| `tests/test_env_config.py` | `.env` loader đọc cấu hình local, giữ nguyên biến đã set trong shell và hỗ trợ quote/comment cơ bản. |
 | `tests/test_e2e_subprocess.py` | Mở KDC/App Server trên port tạm, chạy client CLI happy path và negative E2E sai password. |
 
 Smoke test `scratch/test_cross_realm.py` chạy bằng runtime tạm, không xóa `kdc/database.db`, keytab hoặc credential cache thật trong repo. Kịch bản này kiểm:
@@ -422,12 +455,16 @@ Smoke test `scratch/test_cross_realm.py` chạy bằng runtime tạm, không xó
 - `alice@DEMO.LOCAL` lấy cross-realm TGT rồi lấy service ticket cho `fileserver/localhost@PARTNER.LOCAL`.
 - Client hoàn tất AP Exchange qua HTTP `Negotiate` chứa raw AP-REQ/AP-REP DER.
 
-Verbose security-flow demo `scratch/demo_security_flows.py` in theo dạng `Client -> AS`, `Attacker -> TGS`, `KRB_ERROR`, `BLOCKED/ALLOWED`. Kịch bản này trình bày:
+Verbose security-flow demo `scratch/demo_security_flows.py` in theo dạng `Client -> AS`, `Attacker -> TGS/App Server`, `KRB_ERROR`, HTTP status và `BLOCKED/ALLOWED`. Kịch bản này trình bày:
 
 - Normal AS -> TGS flow: `AS_REQ`, `AS_REP`, `TGS_REQ`, `TGS_REP`.
 - Wrong password/forged pre-auth: AS trả `KDC_ERR_PREAUTH_FAILED`.
+- Account lockout: nhiều lần pre-auth sai khiến AS trả `KDC_ERR_CLIENT_REVOKED`.
 - Tampered TGT: TGS trả `KRB_AP_ERR_MODIFIED`.
 - Replayed TGS authenticator: TGS trả `KRB_AP_ERR_REPEAT`.
+- Replayed AP authenticator: Application Server trả HTTP `403` và `KRB_AP_ERR_REPEAT`.
+- Tampered service ticket: Application Server trả HTTP `403` và `KRB_AP_ERR_MODIFIED`.
+- Wrong-service AP-REQ khi keytab có nhiều service key: Application Server vẫn chặn bằng `KRB_AP_ERR_MODIFIED`.
 - Key rotation: TGT cũ còn hạn vẫn được chấp nhận nhờ `kvno` và `principal_keys`.
 
 Verbose TGT renewal demo `scratch/demo_tgt_renewal.py` trình bày riêng luồng renew:

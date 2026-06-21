@@ -31,21 +31,24 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="utf-8">
     <title>KAdmin Web Console - Kerberos V5</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         :root {
-            --bg-color: #0b0f19;
-            --card-bg: rgba(255, 255, 255, 0.03);
-            --card-border: rgba(255, 255, 255, 0.08);
-            --text-color: #f3f4f6;
-            --text-muted: #9ca3af;
-            --primary: #3b82f6;
-            --primary-glow: rgba(59, 130, 246, 0.5);
-            --success: #10b981;
-            --success-glow: rgba(16, 185, 129, 0.4);
+            --page-bg: #f4f6f8;
+            --surface: #ffffff;
+            --surface-muted: #f8fafc;
+            --border: #d8dee8;
+            --border-strong: #b8c2d2;
+            --text: #172033;
+            --text-muted: #667085;
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --success: #12805c;
             --danger: #ef4444;
-            --danger-glow: rgba(239, 68, 68, 0.4);
-            --warning: #f59e0b;
+            --warning: #b45309;
+            --accent: #0f766e;
+            --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+            --shadow-md: 0 12px 30px rgba(16, 24, 40, 0.10);
         }
 
         * {
@@ -55,69 +58,86 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
 
         body {
-            font-family: 'Inter', sans-serif;
-            background: radial-gradient(circle at top right, #1e1b4b, #090d16 60%);
-            color: var(--text-color);
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: var(--page-bg);
+            color: var(--text);
             min-height: 100vh;
             display: flex;
             overflow-x: hidden;
         }
 
-        /* Sidebar */
         .sidebar {
-            width: 260px;
-            background: rgba(15, 23, 42, 0.8);
-            backdrop-filter: blur(12px);
-            border-right: 1px solid var(--card-border);
-            padding: 30px 20px;
+            width: 264px;
+            background: #ffffff;
+            border-right: 1px solid var(--border);
+            padding: 24px 18px;
             display: flex;
             flex-direction: column;
-            gap: 40px;
+            gap: 28px;
+            position: sticky;
+            top: 0;
+            min-height: 100vh;
         }
 
         .logo {
-            font-size: 20px;
+            font-size: 18px;
             font-weight: 700;
-            background: linear-gradient(135deg, #60a5fa, #3b82f6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: var(--text);
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 12px;
+            padding: 0 8px 18px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .logo svg {
+            color: var(--primary);
+        }
+
+        .brand-text {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .brand-caption {
+            color: var(--text-muted);
+            font-size: 12px;
+            font-weight: 600;
         }
 
         .menu {
             list-style: none;
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 6px;
         }
 
         .menu-item {
-            padding: 12px 16px;
+            padding: 10px 12px;
             border-radius: 8px;
             cursor: pointer;
-            font-weight: 500;
+            font-weight: 600;
             color: var(--text-muted);
-            transition: all 0.3s ease;
+            transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
             display: flex;
             align-items: center;
-            gap: 12px;
+            justify-content: space-between;
+            border: 1px solid transparent;
         }
 
         .menu-item:hover, .menu-item.active {
-            color: var(--text-color);
-            background: var(--card-bg);
-            box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.02);
-            border-left: 3px solid var(--primary);
+            color: var(--primary);
+            background: #eef4ff;
+            border-color: #c7d7fe;
+            box-shadow: var(--shadow-sm);
         }
 
-        /* Main Content */
         .main-content {
             flex: 1;
-            padding: 40px;
+            padding: 28px 32px 40px;
             overflow-y: auto;
-            max-width: 1400px;
+            max-width: 1440px;
             margin: 0 auto;
             width: 100%;
         }
@@ -126,25 +146,28 @@ HTML_CONTENT = """<!DOCTYPE html>
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 40px;
+            margin-bottom: 24px;
+            gap: 16px;
         }
 
         h1 {
-            font-size: 28px;
+            font-size: 26px;
             font-weight: 700;
+            letter-spacing: 0;
         }
 
         .status-badge {
-            background: rgba(16, 185, 129, 0.1);
+            background: #ecfdf3;
             color: var(--success);
-            padding: 6px 12px;
-            border-radius: 20px;
-            border: 1px solid var(--success-glow);
+            padding: 7px 12px;
+            border-radius: 999px;
+            border: 1px solid #abefc6;
             font-size: 13px;
-            font-weight: 600;
+            font-weight: 700;
             display: flex;
             align-items: center;
             gap: 6px;
+            white-space: nowrap;
         }
 
         .status-dot {
@@ -152,49 +175,41 @@ HTML_CONTENT = """<!DOCTYPE html>
             height: 8px;
             background: var(--success);
             border-radius: 50%;
-            box-shadow: 0 0 8px var(--success);
-            animation: pulse 2s infinite;
+            box-shadow: 0 0 0 3px rgba(18, 128, 92, 0.16);
         }
 
-        @keyframes pulse {
-            0% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.3); opacity: 0.5; }
-            100% { transform: scale(1); opacity: 1; }
-        }
-
-        /* Dashboard View */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 24px;
-            margin-bottom: 40px;
+            gap: 16px;
+            margin-bottom: 20px;
         }
 
         .stat-card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            padding: 24px;
-            backdrop-filter: blur(10px);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 18px;
+            box-shadow: var(--shadow-sm);
         }
 
         .stat-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
-            border-color: rgba(59, 130, 246, 0.2);
+            border-color: var(--border-strong);
+            box-shadow: var(--shadow-md);
         }
 
         .stat-title {
             color: var(--text-muted);
-            font-size: 14px;
-            font-weight: 500;
-            margin-bottom: 12px;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            text-transform: uppercase;
         }
 
         .stat-value {
-            font-size: 32px;
+            font-size: 30px;
             font-weight: 700;
+            line-height: 1.1;
         }
 
         .stat-desc {
@@ -206,89 +221,107 @@ HTML_CONTENT = """<!DOCTYPE html>
         .success-text { color: var(--success); }
         .danger-text { color: var(--danger); }
 
-        /* General Tables and Panels */
         .panel {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            padding: 30px;
-            backdrop-filter: blur(10px);
-            margin-bottom: 30px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow-sm);
+            overflow-x: auto;
         }
 
         .panel-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 24px;
+            margin-bottom: 16px;
+            gap: 12px;
+            flex-wrap: wrap;
         }
 
         .panel-title {
             font-size: 18px;
-            font-weight: 600;
+            font-weight: 700;
         }
 
-        /* Buttons */
         .btn {
             background: var(--primary);
-            color: var(--text-color);
-            border: none;
-            padding: 10px 20px;
+            color: #ffffff;
+            border: 1px solid var(--primary);
+            padding: 9px 14px;
             border-radius: 8px;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
             font-size: 14px;
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            box-shadow: var(--shadow-sm);
+            white-space: nowrap;
         }
 
         .btn:hover {
-            background: #2563eb;
-            box-shadow: 0 0 12px var(--primary-glow);
+            background: var(--primary-hover);
+            border-color: var(--primary-hover);
         }
 
         .btn-danger {
-            background: rgba(239, 68, 68, 0.1);
+            background: #fff5f5;
             color: var(--danger);
-            border: 1px solid var(--danger-glow);
+            border: 1px solid #fecaca;
         }
 
         .btn-danger:hover {
             background: var(--danger);
-            color: var(--text-color);
-            box-shadow: 0 0 12px var(--danger-glow);
+            color: #ffffff;
+            border-color: var(--danger);
         }
 
         .btn-secondary {
-            background: rgba(255, 255, 255, 0.05);
-            color: var(--text-color);
-            border: 1px solid var(--card-border);
+            background: #ffffff;
+            color: var(--text);
+            border: 1px solid var(--border-strong);
         }
 
         .btn-secondary:hover {
-            background: rgba(255, 255, 255, 0.1);
+            background: var(--surface-muted);
+            border-color: var(--text-muted);
         }
 
-        /* Table */
+        .btn-sm {
+            padding: 6px 10px;
+            font-size: 12px;
+            min-height: 30px;
+        }
+
+        .action-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
             text-align: left;
+            min-width: 760px;
         }
 
         th, td {
-            padding: 16px;
-            border-bottom: 1px solid var(--card-border);
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
         }
 
         th {
             color: var(--text-muted);
-            font-weight: 600;
-            font-size: 14px;
-            background: rgba(0, 0, 0, 0.1);
+            font-weight: 700;
+            font-size: 12px;
+            background: var(--surface-muted);
+            text-transform: uppercase;
+            white-space: nowrap;
         }
 
         td {
@@ -296,46 +329,47 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
 
         tr:hover td {
-            background: rgba(255, 255, 255, 0.01);
+            background: #fbfdff;
         }
 
         .badge {
-            padding: 4px 8px;
-            border-radius: 12px;
+            padding: 4px 9px;
+            border-radius: 999px;
             font-size: 12px;
-            font-weight: 600;
+            font-weight: 700;
             display: inline-block;
+            border: 1px solid transparent;
         }
 
-        .badge-user { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
-        .badge-service { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
-        .badge-tgs { background: rgba(167, 139, 250, 0.15); color: #c084fc; }
-        .badge-active { background: rgba(16, 185, 129, 0.15); color: var(--success); }
-        .badge-disabled { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+        .badge-user { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+        .badge-service { background: #fffbeb; color: #92400e; border-color: #fde68a; }
+        .badge-tgs { background: #f0fdfa; color: #0f766e; border-color: #99f6e4; }
+        .badge-active { background: #ecfdf3; color: var(--success); border-color: #abefc6; }
+        .badge-disabled { background: #fff1f2; color: var(--danger); border-color: #fecdd3; }
 
-        /* Filter Controls */
         .filters {
             display: flex;
-            gap: 16px;
-            margin-bottom: 24px;
+            gap: 12px;
+            margin-bottom: 16px;
             flex-wrap: wrap;
         }
 
         .filter-input {
-            background: rgba(0, 0, 0, 0.2);
-            border: 1px solid var(--card-border);
-            color: var(--text-color);
-            padding: 10px 16px;
+            background: #ffffff;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 9px 12px;
             border-radius: 8px;
             font-family: inherit;
             font-size: 14px;
             outline: none;
             min-width: 180px;
-            transition: border-color 0.3s ease;
+            transition: border-color 0.16s ease, box-shadow 0.16s ease;
         }
 
         .filter-input:focus {
             border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
         }
 
         .filter-search {
@@ -343,7 +377,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             min-width: 250px;
         }
 
-        /* Modal styling */
         .modal {
             display: none;
             position: fixed;
@@ -351,13 +384,13 @@ HTML_CONTENT = """<!DOCTYPE html>
             left: 0;
             width: 100vw;
             height: 100vh;
-            background: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(8px);
+            background: rgba(23, 32, 51, 0.42);
             z-index: 1000;
             justify-content: center;
             align-items: center;
             opacity: 0;
-            transition: opacity 0.3s ease;
+            transition: opacity 0.16s ease;
+            padding: 20px;
         }
 
         .modal.show {
@@ -366,45 +399,47 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
 
         .modal-content {
-            background: #0f172a;
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            width: 480px;
-            padding: 30px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-            transform: scale(0.9);
-            transition: transform 0.3s ease;
+            background: #ffffff;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            width: min(520px, 100%);
+            padding: 24px;
+            box-shadow: var(--shadow-md);
+            transform: translateY(8px);
+            transition: transform 0.16s ease;
         }
 
         .modal.show .modal-content {
-            transform: scale(1);
+            transform: translateY(0);
         }
 
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 16px;
         }
 
         .form-label {
             display: block;
             font-size: 14px;
-            font-weight: 500;
+            font-weight: 700;
             color: var(--text-muted);
             margin-bottom: 8px;
         }
 
         .form-control {
             width: 100%;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--card-border);
+            background: #ffffff;
+            border: 1px solid var(--border);
             border-radius: 8px;
             padding: 10px 14px;
-            color: var(--text-color);
+            color: var(--text);
             outline: none;
             font-size: 14px;
+            font-family: inherit;
         }
 
         .form-control:focus {
             border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
         }
 
         .checkbox-group {
@@ -425,22 +460,53 @@ HTML_CONTENT = """<!DOCTYPE html>
             display: flex;
             justify-content: flex-end;
             gap: 12px;
-            margin-top: 30px;
+            margin-top: 24px;
         }
 
-        /* Log Detail view */
         .log-detail {
-            background: rgba(0, 0, 0, 0.3);
-            font-family: monospace;
+            background: #0f172a;
+            font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
             padding: 12px;
             border-radius: 8px;
             font-size: 12px;
-            border: 1px solid var(--card-border);
+            border: 1px solid #1f2937;
             white-space: pre-wrap;
             margin-top: 10px;
             color: #38bdf8;
             max-height: 200px;
             overflow-y: auto;
+        }
+
+        @media (max-width: 860px) {
+            body {
+                display: block;
+            }
+
+            .sidebar {
+                width: 100%;
+                min-height: auto;
+                position: static;
+                border-right: none;
+                border-bottom: 1px solid var(--border);
+            }
+
+            .menu {
+                flex-direction: row;
+                overflow-x: auto;
+            }
+
+            .menu-item {
+                min-width: max-content;
+            }
+
+            .main-content {
+                padding: 20px 16px 32px;
+            }
+
+            header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
         }
     </style>
 </head>
@@ -452,7 +518,10 @@ HTML_CONTENT = """<!DOCTYPE html>
                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
                 <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
-            KAdmin Console
+            <span class="brand-text">
+                <span>KAdmin Console</span>
+                <span class="brand-caption">Kerberos operations</span>
+            </span>
         </div>
         <ul class="menu">
             <li class="menu-item active" onclick="switchTab('dashboard')">
@@ -504,7 +573,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
             <div class="panel">
                 <div class="panel-header">
-                    <div class="panel-title">Recent Authenticaton Activity</div>
+                    <div class="panel-title">Recent Authentication Activity</div>
                 </div>
                 <table id="recent-logs-table">
                     <thead>
@@ -715,12 +784,14 @@ HTML_CONTENT = """<!DOCTYPE html>
                             <td>${p.enctype || 'N/A'}</td>
                             <td><span class="badge ${statusClass}">${statusText}</span></td>
                             <td>
-                                <button class="btn btn-secondary" style="padding: 4px 8px; font-size:12px;" onclick="togglePrincipal('${p.principal_name}')">
+                                <span class="action-group">
+                                <button class="btn btn-secondary btn-sm" onclick="togglePrincipal('${p.principal_name}')">
                                     ${toggleText}
                                 </button>
-                                <button class="btn btn-danger" style="padding: 4px 8px; font-size:12px;" onclick="deletePrincipal('${p.principal_name}')">
+                                <button class="btn btn-danger btn-sm" onclick="deletePrincipal('${p.principal_name}')">
                                     Delete
                                 </button>
+                                </span>
                             </td>
                         `;
                         tbody.appendChild(tr);

@@ -13,6 +13,7 @@ import os
 import sys
 import time
 import base64
+from html import escape
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -61,6 +62,222 @@ from kdc.database import DEFAULT_KEYTAB_PATH
 SERVICE_PRINCIPAL = APP_SERVICE_PRINCIPAL
 KEYTAB_PATH = os.getenv("APP_SERVER_KEYTAB", DEFAULT_KEYTAB_PATH)
 SERVICE_KEY = None
+
+PROTECTED_FILES = [
+    {
+        "name": "project-overview.txt",
+        "title": "Kerberos demo project overview",
+        "required_group": "users",
+        "summary": "Read the protected service introduction.",
+    },
+    {
+        "name": "team-handbook.txt",
+        "title": "Internal team handbook",
+        "required_group": "users",
+        "summary": "Read shared user documentation.",
+    },
+    {
+        "name": "kdc-audit-log.txt",
+        "title": "KDC audit log snapshot",
+        "required_group": "admins",
+        "summary": "Review authentication and administration events.",
+    },
+    {
+        "name": "keytab-rotation-plan.txt",
+        "title": "Service key rotation plan",
+        "required_group": "admins",
+        "summary": "Review kvno/keytab rotation guidance.",
+    },
+]
+
+
+def _visible_files(groups: list[str]) -> list[dict]:
+    group_set = set(groups)
+    return [
+        item
+        for item in PROTECTED_FILES
+        if item["required_group"] in group_set
+    ]
+
+
+def _build_service_data(client_principal: str, requested_service_princ: str,
+                        client_groups: list[str], visible_files: list[dict],
+                        is_admin: bool) -> str:
+    access_level = "admin" if is_admin else "standard-user"
+    groups_text = ", ".join(client_groups) if client_groups else "(none)"
+    lines = [
+        "Protected File Server access granted",
+        f"client_principal: {client_principal}",
+        f"service_principal: {requested_service_princ}",
+        f"groups: {groups_text}",
+        f"access_level: {access_level}",
+        "authorized_action: LIST_PROTECTED_FILES",
+        "available_resources:",
+    ]
+    for item in visible_files:
+        lines.append(
+            f"- {item['name']} [{item['required_group']}] - {item['summary']}"
+        )
+    if not is_admin:
+        lines.append("admin_resources: hidden (requires admins group)")
+    lines.append("result: service data returned only after a valid AP-REQ")
+    return "\n".join(lines)
+
+
+def _render_file_catalog_html(client_principal: str, requested_service_princ: str,
+                              client_groups: list[str], visible_files: list[dict],
+                              is_admin: bool, access_time: str,
+                              service_data: str) -> str:
+    rows = "\n".join(
+        "<tr>"
+        f"<td>{escape(item['name'])}</td>"
+        f"<td>{escape(item['title'])}</td>"
+        f"<td>{escape(item['required_group'])}</td>"
+        f"<td>{escape(item['summary'])}</td>"
+        "</tr>"
+        for item in visible_files
+    )
+    if not rows:
+        rows = (
+            "<tr><td colspan=\"4\">No files are visible for this ticket's "
+            "authorization groups.</td></tr>"
+        )
+
+    groups_text = ", ".join(client_groups) if client_groups else "(none)"
+    access_label = "Administrator" if is_admin else "Standard User"
+    admin_note = (
+        "Admin-only files are visible because the service ticket carries the "
+        "admins group."
+        if is_admin
+        else "Admin-only files are hidden because this ticket does not carry "
+             "the admins group."
+    )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Kerberos File Server</title>
+    <style>
+        body {{
+            font-family: "Segoe UI", Arial, sans-serif;
+            background: #f4f6f8;
+            color: #1f2937;
+            margin: 0;
+            padding: 32px;
+        }}
+        .shell {{
+            max-width: 980px;
+            margin: 0 auto;
+            background: #ffffff;
+            border: 1px solid #d9e0e8;
+            border-radius: 8px;
+            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+            overflow: hidden;
+        }}
+        .header {{
+            padding: 24px 28px;
+            background: #0f766e;
+            color: #ffffff;
+        }}
+        .header h1 {{
+            margin: 0 0 6px;
+            font-size: 24px;
+            letter-spacing: 0;
+        }}
+        .header p {{
+            margin: 0;
+            color: #ccfbf1;
+        }}
+        .content {{
+            padding: 24px 28px 28px;
+        }}
+        .meta {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 12px;
+            margin-bottom: 22px;
+        }}
+        .meta div {{
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 12px;
+            background: #f8fafc;
+        }}
+        .label {{
+            display: block;
+            color: #64748b;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0 18px;
+        }}
+        th, td {{
+            border-bottom: 1px solid #e5e7eb;
+            text-align: left;
+            padding: 11px 10px;
+            vertical-align: top;
+        }}
+        th {{
+            background: #f8fafc;
+            color: #475569;
+            font-size: 13px;
+            text-transform: uppercase;
+        }}
+        .note {{
+            border-left: 4px solid #0f766e;
+            background: #ecfdf5;
+            padding: 12px 14px;
+            margin-bottom: 18px;
+        }}
+        pre {{
+            white-space: pre-wrap;
+            background: #111827;
+            color: #e5e7eb;
+            border-radius: 6px;
+            padding: 14px;
+            overflow-x: auto;
+        }}
+    </style>
+</head>
+<body>
+    <div class="shell">
+        <div class="header">
+            <h1>Kerberos Protected File Server</h1>
+            <p>HTTP 200 returned after a valid AP-REQ and mutual AP-REP verification.</p>
+        </div>
+        <div class="content">
+            <div class="meta">
+                <div><span class="label">Client</span>{escape(client_principal)}</div>
+                <div><span class="label">Service</span>{escape(requested_service_princ)}</div>
+                <div><span class="label">Groups</span>{escape(groups_text)}</div>
+                <div><span class="label">Access level</span>{escape(access_label)}</div>
+            </div>
+            <div class="note">{escape(admin_note)} Access granted at {escape(access_time)}.</div>
+            <h2>Protected File Catalog</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>File</th>
+                        <th>Resource</th>
+                        <th>Required group</th>
+                        <th>Allowed action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows}
+                </tbody>
+            </table>
+            <h2>Service response payload</h2>
+            <pre>{escape(service_data)}</pre>
+        </div>
+    </div>
+</body>
+</html>"""
 
 
 def _ticket_expired(ticket: dict, now: float) -> bool:
@@ -368,20 +585,17 @@ class NegotiateRequestHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-        # Perform access control based on groups
+        # Perform access control based on groups and build protected service data.
         is_admin = "admins" in client_groups
-        if is_admin:
-            welcome_msg = (
-                f"[Admin Access Granted] Welcome to the File Server admin portal, {client_principal}! "
-                f"You have administrator privileges. Group membership: {client_groups}. "
-                f"Access granted at {time.strftime('%Y-%m-%d %H:%M:%S')}."
-            )
-        else:
-            welcome_msg = (
-                f"[User Access Granted] Welcome to the File Server, {client_principal}! "
-                f"You have standard user access. Group membership: {client_groups}. "
-                f"Access granted at {time.strftime('%Y-%m-%d %H:%M:%S')}."
-            )
+        visible_files = _visible_files(client_groups)
+        access_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        service_data = _build_service_data(
+            client_principal,
+            requested_service_princ,
+            client_groups,
+            visible_files,
+            is_admin,
+        )
 
         # Handle subkey and sequence number handshake
         client_subkey = authenticator.get("subkey")
@@ -423,7 +637,6 @@ class NegotiateRequestHandler(BaseHTTPRequestHandler):
             "service_principal": requested_service_princ,
             "encrypted_data": encrypted_ap_rep,
             "enctype": ticket_enctype,
-            "service_data": welcome_msg,
         }
         
         ap_rep_bytes = encode_message(ap_rep_msg)
@@ -435,61 +648,15 @@ class NegotiateRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         
-        html_body = f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Kerberos File Server</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f0f2f5;
-            color: #333;
-            margin: 0;
-            padding: 40px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-        }}
-        .card {{
-            background: white;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-            max-width: 600px;
-            width: 100%;
-        }}
-        h1 {{
-            color: #0066cc;
-            margin-top: 0;
-        }}
-        .status {{
-            background: #e1f5fe;
-            color: #0288d1;
-            padding: 10px;
-            border-radius: 6px;
-            font-weight: bold;
-            margin-bottom: 20px;
-        }}
-        .msg {{
-            line-height: 1.6;
-            background: #f9f9f9;
-            padding: 15px;
-            border-left: 5px solid #0066cc;
-            font-family: monospace;
-            white-space: pre-wrap;
-        }}
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h1>Kerberos Secured File Server</h1>
-        <div class="status">Authentication Status: SUCCESS (Negotiate)</div>
-        <p>You have successfully logged in using your Kerberos ticket.</p>
-        <div class="msg">{welcome_msg}</div>
-    </div>
-</body>
-</html>"""
+        html_body = _render_file_catalog_html(
+            client_principal,
+            requested_service_princ,
+            client_groups,
+            visible_files,
+            is_admin,
+            access_time,
+            service_data,
+        )
         self.wfile.write(html_body.encode("utf-8"))
         print("[FileServer] AP_REP sent via HTTP Negotiate. Mutual authentication complete.")
 

@@ -171,6 +171,7 @@ class E2ESubprocessTests(unittest.TestCase):
                 self.assertIn("AS Exchange successful", combined)
                 self.assertIn("TGS Exchange successful", combined)
                 self.assertIn("Mutual authentication verified", combined)
+                self.assertIn("authorized_action: LIST_PROTECTED_FILES", combined)
                 self.assertIn("Full Kerberos authentication completed successfully", combined)
 
                 cached_client = subprocess.run(
@@ -191,6 +192,7 @@ class E2ESubprocessTests(unittest.TestCase):
                 self.assertIn("Reusing cached TGT. Skipping AS Exchange.", cached_combined)
                 self.assertIn("Found valid cached service ticket. Skipping TGS Exchange.", cached_combined)
                 self.assertIn("Mutual authentication verified", cached_combined)
+                self.assertIn("authorized_action: LIST_PROTECTED_FILES", cached_combined)
                 self.assertIn("Full Kerberos authentication completed successfully", cached_combined)
 
                 klist = subprocess.run(
@@ -222,6 +224,7 @@ class E2ESubprocessTests(unittest.TestCase):
                     kaccess_combined + "\n[KDC]\n" + _tail(kdc_log) + "\n[APP]\n" + _tail(app_log),
                 )
                 self.assertIn("Mutual authentication verified", kaccess_combined)
+                self.assertIn("authorized_action: LIST_PROTECTED_FILES", kaccess_combined)
 
                 kdestroy = subprocess.run(
                     [sys.executable, "-u", "-m", "client.kdestroy"],

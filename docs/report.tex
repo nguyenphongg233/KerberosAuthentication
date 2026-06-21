@@ -61,6 +61,23 @@
 
 \lstset{style=pythoncode}
 
+\newcommand{\ScreenshotPlaceholder}[4]{
+\begin{figure}[H]
+\centering
+\IfFileExists{#1}{
+    \includegraphics[width=0.95\textwidth]{#1}
+}{
+    \fbox{\parbox{0.88\textwidth}{
+    \centering
+    Chèn ảnh chụp terminal tại đây sau khi lưu file \texttt{docs/#1}.\\
+    #4
+    }}
+}
+\caption{#2}
+\label{#3}
+\end{figure}
+}
+
 \pagestyle{fancy}
 \fancyhf{}
 \setlength{\headheight}{15pt}
@@ -710,16 +727,29 @@ Bên trong chuỗi mã hóa Base64 gửi qua HTTP header \texttt{Authorization: 
 \State Server trích xuất \texttt{Kc\_service} và dữ liệu phân quyền nhóm (RBAC/Authorization Data) từ Ticket
 \State Server dùng \texttt{Kc\_service} giải mã Authenticator
 \State Server kiểm tra \texttt{ctime/cusec} chống replay, và đánh giá quyền truy cập của người dùng
+\State Nếu hợp lệ, Server thực hiện protected action \texttt{LIST\_PROTECTED\_FILES}: trả danh sách tài nguyên file mà nhóm của client được phép thấy
 \State Server tạo \texttt{AP-REP} mã hóa bằng \texttt{client\_subkey} (hoặc \texttt{Kc\_service}) chứa \texttt{ctime/cusec} của client, \texttt{server\_subkey} và \texttt{seq-number}
-\State Server trả về HTTP 200 OK với header \texttt{WWW-Authenticate: Negotiate <Base64(AP-REP)>}
+\State Server trả về HTTP 200 OK với header \texttt{WWW-Authenticate: Negotiate <Base64(AP-REP)>} và HTML body chứa protected file catalog
 \State Client giải mã \texttt{AP-REP} và xác nhận Mutual Authentication
 \end{algorithmic}
 \end{algorithm}
 
+\subsubsection{Protected service action sau khi xác thực}
+
+Trong demo, Application Server là \texttt{Kerberos Protected File Server}. Sau khi \texttt{AP-REQ} hợp lệ, server không chỉ trả thông báo đăng nhập thành công mà còn thực hiện một thao tác nghiệp vụ được bảo vệ: \texttt{LIST\_PROTECTED\_FILES}. Danh sách file trả về phụ thuộc vào \texttt{authorization\_data} trong service ticket:
+
+\begin{itemize}
+    \item User có nhóm \texttt{users} thấy các tài nguyên chung như \texttt{project-overview.txt} và \texttt{team-handbook.txt}.
+    \item User có thêm nhóm \texttt{admins}, ví dụ \texttt{alice@DEMO.LOCAL}, thấy thêm tài nguyên admin như \texttt{kdc-audit-log.txt} và \texttt{keytab-rotation-plan.txt}.
+    \item Nếu không có service ticket hợp lệ, server chỉ trả HTTP \texttt{401}; nếu ticket/authenticator sai hoặc replay, server trả HTTP \texttt{403} với mã lỗi Kerberos tương ứng.
+\end{itemize}
+
+Như vậy, ảnh chụp demo nên thể hiện rõ ba điểm: client đã có service ticket, gửi \texttt{AP-REQ} qua \texttt{Authorization: Negotiate}, và sau đó nhận \texttt{SERVICE RESPONSE} có \texttt{authorized\_action: LIST\_PROTECTED\_FILES} cùng danh sách tài nguyên được phép truy cập.
+
 Thông điệp \texttt{AP-REP} dùng để xác thực ngược (Mutual Authentication):
 \begin{itemize}
     \item \textbf{Timestamp (\texttt{ctime/cusec})}: Lấy từ Authenticator của client. Client kiểm tra giá trị này để đảm bảo Server hợp pháp đã giải mã được vé.
-    \item \textbf{Subkey \& Seq-number}: Server sinh \texttt{server\_subkey} và \texttt{seq-number} trong \texttt{AP-REP} để mô phỏng bước đàm phán khóa con. Project hiện chưa triển khai lớp wrap/unwrap dữ liệu ứng dụng sau AP Exchange.
+    \item \textbf{Subkey \& Seq-number}: Server sinh \texttt{server\_subkey} và \texttt{seq-number} trong \texttt{AP-REP} để mô phỏng bước đàm phán khóa con. Project đã trả protected service response sau AP Exchange, nhưng chưa triển khai lớp GSS wrap/unwrap cho nhiều request dữ liệu ứng dụng độc lập sau khi phiên đã được thiết lập.
 \end{itemize}
 
 \section{BẢO MẬT VÀ PHÂN TÍCH RỦI RO}
@@ -841,7 +871,25 @@ python -m client.client_app
 
 KAdmin Web chạy tại \texttt{http://127.0.0.1:8088/}. Đây là dashboard quản trị local cho demo, dùng cùng SQLite database với KDC. Giao diện và REST API hỗ trợ xem thống kê, liệt kê principal, thêm principal user/service, bật/tắt principal, xóa principal và xem audit log. Các endpoint chính gồm \texttt{GET /api/statistics}, \texttt{GET /api/principals}, \texttt{POST /api/principals}, \texttt{POST /api/principals/toggle}, \texttt{POST /api/principals/delete} và \texttt{GET /api/audit\_logs}. Khi một principal bị disable qua dashboard, AS sẽ từ chối bằng \texttt{KDC\_ERR\_CLIENT\_REVOKED}. Do Web Console dùng HTTP thô và chưa có cơ chế đăng nhập/TLS/mTLS riêng, nhóm chỉ sử dụng nó làm công cụ demo local, không xem đây là giao thức quản trị production như \texttt{kadmin} thật.
 
+\ScreenshotPlaceholder
+{figures/kadmin-web-dashboard.png}
+{KAdmin Web dashboard hiển thị principal, thống kê và audit log}
+{fig:kadmin_web_dashboard}
+{Ảnh cần thể hiện dashboard \texttt{http://127.0.0.1:8088/}, danh sách principal, trạng thái enable/disable hoặc audit log sau khi thao tác quản trị.}
+
 Ngoài app demo chạy liền ba pha, client còn có các lệnh mô phỏng thao tác người dùng Kerberos cơ bản: \texttt{python -m client.kinit alice} để lấy TGT, \texttt{python -m client.klist} để xem credential cache, \texttt{python -m client.kvno fileserver} để xin service ticket và in kvno, \texttt{python -m client.kaccess fileserver} để truy cập Application Server bằng ticket trong cache, \texttt{python -m client.krenew} để renew TGT và \texttt{python -m client.kdestroy} để xóa cache.
+
+\ScreenshotPlaceholder
+{figures/client-cli-kinit-klist-kvno-kaccess.png}
+{Các lệnh client kiểu Kerberos: kinit, klist, kvno và kaccess}
+{fig:client_cli_workflow}
+{Ảnh cần thể hiện chuỗi lệnh \texttt{python -m client.kinit alice}, \texttt{python -m client.klist}, \texttt{python -m client.kvno fileserver} và \texttt{python -m client.kaccess fileserver}; trong đó \texttt{kaccess} truy cập service bằng ticket trong cache.}
+
+\ScreenshotPlaceholder
+{figures/service-protected-file-catalog.png}
+{Application Server trả protected file catalog sau khi AP-REQ hợp lệ}
+{fig:service_protected_file_catalog}
+{Ảnh cần thể hiện phần \texttt{SERVICE RESPONSE}: \texttt{Protected File Server access granted}, \texttt{authorized\_action: LIST\_PROTECTED\_FILES}, danh sách file user/admin được phép xem và dòng \texttt{Mutual authentication verified}. Cách dễ nhất là chụp terminal \texttt{python -m client.kaccess fileserver}; nếu chụp trang HTML thì request phải có header \texttt{Authorization: Negotiate} hợp lệ, mở browser trực tiếp sẽ bị HTTP \texttt{401}.}
 
 Hoặc chạy kịch bản kiểm thử liên Realm tự động. Script này dùng temp runtime riêng, không xóa database/keytab/cache thật trong repository:
 
@@ -865,7 +913,7 @@ password: alice_password
 \hline
 \textbf{Kịch bản} & \textbf{Input/Điều kiện} & \textbf{Kết quả kỳ vọng} \\
 \hline
-Happy path & \texttt{alice/alice\_password} & Hoàn thành AS, TGS, AP và mutual authentication \\
+Happy path & \texttt{alice/alice\_password} & Hoàn thành AS, TGS, AP, mutual authentication và nhận protected file catalog từ Application Server \\
 \hline
 Sai mật khẩu & \texttt{alice/wrong\_password} & AS trả \texttt{KDC\_ERR\_PREAUTH\_FAILED} \\
 \hline
@@ -902,7 +950,13 @@ Kiểm thử regression in-process:
 python -m unittest discover -s tests -p "test_*.py" -v
 \end{lstlisting}
 
-Kết quả: 33 regression tests đều pass. Các case bao gồm sai password, principal không tồn tại, thiếu pre-auth, timestamp cũ, account lockout tạm thời, replay authenticator ở TGS và Application Server, AP wrong-service kể cả khi keytab chứa nhiều service key, TGT/service ticket bị sửa, ticket hết hạn/chưa hiệu lực, service không tồn tại, TGT renewal ở TGS handler và qua \texttt{client\_app.renew\_tgt\_exchange()}, key history/kvno rotation, KAdmin CLI \texttt{cpw}/\texttt{ktadd --all-versions}, KAdmin Web API, cấu hình \texttt{.env}, Kerberos-style CLI \texttt{kinit/klist/kvno/kaccess/kdestroy}, keytab nhiều kvno, ccache metadata, ASN.1/DER round-trip và E2E subprocess mở KDC/App Server trên port tạm gồm cả negative case sai password. Bộ test này dùng runtime tạm nên không ảnh hưởng database/keytab/cache thật trong repository.
+Kết quả: 34 regression tests đều pass. Các case bao gồm sai password, principal không tồn tại, thiếu pre-auth, timestamp cũ, account lockout tạm thời, replay authenticator ở TGS và Application Server, AP wrong-service kể cả khi keytab chứa nhiều service key, AP hợp lệ trả protected file catalog theo group trong service ticket, TGT/service ticket bị sửa, ticket hết hạn/chưa hiệu lực, service không tồn tại, TGT renewal ở TGS handler và qua \texttt{client\_app.renew\_tgt\_exchange()}, key history/kvno rotation, KAdmin CLI \texttt{cpw}/\texttt{ktadd --all-versions}, KAdmin Web API, cấu hình \texttt{.env}, Kerberos-style CLI \texttt{kinit/klist/kvno/kaccess/kdestroy}, keytab nhiều kvno, ccache metadata, ASN.1/DER round-trip và E2E subprocess mở KDC/App Server trên port tạm gồm cả negative case sai password. Bộ test này dùng runtime tạm nên không ảnh hưởng database/keytab/cache thật trong repository.
+
+\ScreenshotPlaceholder
+{figures/test-unittest-34-pass.png}
+{Kết quả chạy toàn bộ regression tests: 34 tests pass}
+{fig:unittest_34_pass}
+{Ảnh cần thể hiện lệnh \texttt{python -m unittest discover -s tests -p "test\_*.py" -v} và phần cuối output \texttt{Ran 34 tests ... OK}.}
 
 Demo luồng bảo mật có giải thích message và tấn công:
 
@@ -910,7 +964,76 @@ Demo luồng bảo mật có giải thích message và tấn công:
 python scratch/demo_security_flows.py
 \end{lstlisting}
 
-Kết quả: script in rõ từng bước \texttt{AS\_REQ}, \texttt{AS\_REP}, \texttt{TGS\_REQ}, \texttt{TGS\_REP}; các kịch bản wrong password, tampered TGT và replay authenticator đều bị chặn bằng \texttt{KRB\_ERROR}; kịch bản key rotation cho thấy TGT cũ còn hạn vẫn được chấp nhận nhờ \texttt{kvno} và \texttt{principal\_keys}.
+Kết quả: script in rõ từng bước \texttt{AS\_REQ}, \texttt{AS\_REP}, \texttt{TGS\_REQ}, \texttt{TGS\_REP}, \texttt{AP\_REQ}/\texttt{AP\_REP}, HTTP \texttt{Negotiate}; mỗi case có dạng \texttt{[MSG]} message gửi/nhận, \texttt{[STEP]} tác động của attacker và \texttt{[RESULT]} \texttt{BLOCKED}/\texttt{ALLOWED}. Các scenario chính:
+\begin{itemize}
+    \item Normal AS $\rightarrow$ TGS flow: client lấy TGT và service ticket thành công.
+    \item Wrong password/forged pre-auth: AS trả \texttt{KDC\_ERR\_PREAUTH\_FAILED}.
+    \item Account lockout: nhiều lần pre-auth sai khiến AS trả \texttt{KDC\_ERR\_CLIENT\_REVOKED}.
+    \item Tampered TGT: TGS trả \texttt{KRB\_AP\_ERR\_MODIFIED}.
+    \item Replayed TGS authenticator: TGS trả \texttt{KRB\_AP\_ERR\_REPEAT}.
+    \item Replayed AP authenticator: Application Server trả HTTP \texttt{403} và \texttt{KRB\_AP\_ERR\_REPEAT}.
+    \item Tampered service ticket: Application Server trả HTTP \texttt{403} và \texttt{KRB\_AP\_ERR\_MODIFIED}.
+    \item Wrong-service AP-REQ khi keytab có nhiều service key: Application Server vẫn chặn bằng \texttt{KRB\_AP\_ERR\_MODIFIED}.
+    \item Key rotation: TGT cũ còn hạn vẫn được chấp nhận nhờ \texttt{kvno} và \texttt{principal\_keys}.
+\end{itemize}
+
+\subsubsection{Ảnh chụp minh chứng cho các kịch bản tấn công}
+
+Các ảnh dưới đây lấy từ lệnh \texttt{python scratch/demo\_security\_flows.py}. Mỗi ảnh nên chụp đủ phần \texttt{[STEP]}, \texttt{[MSG]} và \texttt{[RESULT]} để thấy rõ attacker tác động gì và hệ thống chặn hay cho phép.
+
+\ScreenshotPlaceholder
+{figures/security-normal-as-tgs.png}
+{Luồng bình thường AS-REQ/AS-REP và TGS-REQ/TGS-REP thành công}
+{fig:security_normal_as_tgs}
+{Ảnh cần thể hiện \texttt{SCENARIO 1}, client gửi \texttt{AS\_REQ}, nhận \texttt{AS\_REP}, gửi \texttt{TGS\_REQ}, nhận \texttt{TGS\_REP} và kết quả \texttt{ALLOWED}.}
+
+\ScreenshotPlaceholder
+{figures/security-wrong-password.png}
+{Sai mật khẩu/forged pre-auth bị AS chặn}
+{fig:security_wrong_password}
+{Ảnh cần thể hiện \texttt{SCENARIO 2}, attacker gửi \texttt{AS\_REQ} với pre-auth mã hóa bằng key sai, AS trả \texttt{KDC\_ERR\_PREAUTH\_FAILED} và \texttt{BLOCKED}.}
+
+\ScreenshotPlaceholder
+{figures/security-account-lockout.png}
+{Account lockout sau nhiều lần pre-auth sai}
+{fig:security_account_lockout}
+{Ảnh cần thể hiện \texttt{SCENARIO 3}, nhiều lần pre-auth sai, sau đó thử password đúng vẫn bị \texttt{KDC\_ERR\_CLIENT\_REVOKED} trong thời gian lockout.}
+
+\ScreenshotPlaceholder
+{figures/security-tampered-tgt.png}
+{TGT bị sửa ciphertext bị TGS từ chối}
+{fig:security_tampered_tgt}
+{Ảnh cần thể hiện \texttt{SCENARIO 4}, attacker sửa một byte trong encrypted TGT, TGS trả \texttt{KRB\_AP\_ERR\_MODIFIED} và \texttt{BLOCKED}.}
+
+\ScreenshotPlaceholder
+{figures/security-replay-tgs-authenticator.png}
+{Replay TGS authenticator bị replay cache chặn}
+{fig:security_replay_tgs}
+{Ảnh cần thể hiện \texttt{SCENARIO 5}, request TGS đầu tiên thành công, request thứ hai dùng lại cùng authenticator bị \texttt{KRB\_AP\_ERR\_REPEAT}.}
+
+\ScreenshotPlaceholder
+{figures/security-replay-ap-authenticator.png}
+{Replay AP authenticator tại Application Server bị chặn}
+{fig:security_replay_ap}
+{Ảnh cần thể hiện \texttt{SCENARIO 6}, AP request đầu HTTP \texttt{200}/\texttt{AP\_REP}, request replay bị HTTP \texttt{403} và \texttt{KRB\_AP\_ERR\_REPEAT}.}
+
+\ScreenshotPlaceholder
+{figures/security-tampered-service-ticket.png}
+{Service ticket bị sửa bị Application Server từ chối}
+{fig:security_tampered_service_ticket}
+{Ảnh cần thể hiện \texttt{SCENARIO 7}, attacker sửa service ticket, Application Server trả HTTP \texttt{403} và \texttt{KRB\_AP\_ERR\_MODIFIED}.}
+
+\ScreenshotPlaceholder
+{figures/security-wrong-service-ap.png}
+{Service ticket không dùng được cho sai service dù keytab có nhiều service key}
+{fig:security_wrong_service_ap}
+{Ảnh cần thể hiện \texttt{SCENARIO 8}, keytab có \texttt{fileserver} và \texttt{mailserver}, attacker đổi outer service sang \texttt{mailserver} nhưng ticket vẫn của \texttt{fileserver}; server trả HTTP \texttt{403}.}
+
+\ScreenshotPlaceholder
+{figures/security-key-rotation-kvno.png}
+{Key rotation: TGT cũ còn hạn vẫn dùng được nhờ kvno/key history}
+{fig:security_key_rotation}
+{Ảnh cần thể hiện \texttt{SCENARIO 9}, \texttt{old\_tgt\_kvno=1}, \texttt{current\_krbtgt\_kvno=2} và kết quả \texttt{ALLOWED}.}
 
 Demo riêng cho TGT renewal:
 
@@ -920,6 +1043,12 @@ python scratch/demo_tgt_renewal.py
 
 Kết quả: script tạo TGT đã hết \texttt{endtime} nhưng còn trong \texttt{renew\_till}, gửi \texttt{TGS\_REQ} với \texttt{kdc\_options=['renew']}, nhận TGT mới và dùng TGT mới để xin service ticket thành công.
 
+\ScreenshotPlaceholder
+{figures/demo-tgt-renewal.png}
+{TGT renewal: TGT hết endtime nhưng còn renew-till được gia hạn}
+{fig:demo_tgt_renewal}
+{Ảnh cần thể hiện lệnh \texttt{python scratch/demo\_tgt\_renewal.py}, \texttt{TGS\_REQ renew}, \texttt{TGS\_REP renewed TGT}, \texttt{old\_endtime}, \texttt{new\_endtime} và \texttt{ALLOWED}.}
+
 Smoke test tích hợp HTTP/cross-realm:
 
 \begin{lstlisting}[style=textcode]
@@ -927,6 +1056,40 @@ python scratch/test_cross_realm.py
 \end{lstlisting}
 
 Kết quả: \texttt{charlie@PARTNER.LOCAL} truy cập service trong realm PARTNER.LOCAL thành công; \texttt{alice@DEMO.LOCAL} lấy cross-realm TGT và service ticket cho \texttt{fileserver/localhost@PARTNER.LOCAL} thành công.
+
+\ScreenshotPlaceholder
+{figures/demo-cross-realm.png}
+{Cross-realm: alice@DEMO.LOCAL lấy vé để truy cập service realm PARTNER.LOCAL}
+{fig:demo_cross_realm}
+{Ảnh cần thể hiện \texttt{Cross-Realm TGT obtained successfully}, service ticket cho \texttt{fileserver/localhost@PARTNER.LOCAL}, \texttt{Mutual authentication verified} và \texttt{SUCCESS}.}
+
+\subsubsection{Demo dùng lại vé trong credential cache}
+
+Để chứng minh client không cần gửi lại password sau khi đã có vé, nhóm chạy demo theo hai lượt:
+\begin{enumerate}
+    \item Lượt đầu nhập \texttt{alice/alice\_password}: client thực hiện đủ AS Exchange, TGS Exchange và AP Exchange; TGT và service ticket được lưu vào credential cache \texttt{client/krb5cc\_demo}.
+    \item Lượt sau chạy lại \texttt{python -m client.client\_app}, nhập username \texttt{alice} và để trống password. Nếu TGT/service ticket còn hạn, client bỏ qua AS Exchange và TGS Exchange, dùng service ticket trong cache để gửi \texttt{AP\_REQ} tới Application Server.
+\end{enumerate}
+
+Các dòng output cần chụp:
+
+\begin{lstlisting}[style=textcode]
+Enter username: alice
+Enter password:
+[Client] Reusing cached TGT. Skipping AS Exchange.
+[Client] Found valid cached service ticket. Skipping TGS Exchange.
+[Client] Sending GET request with Authorization Negotiate header...
+[Client] Mutual authentication verified!
+Full Kerberos authentication completed successfully
+\end{lstlisting}
+
+Kết quả này thể hiện đúng cơ chế Kerberos: password chỉ cần dùng ở lần lấy TGT ban đầu; các lần truy cập tiếp theo dùng credential cache và service ticket còn hiệu lực để xác thực với Application Server.
+
+\ScreenshotPlaceholder
+{figures/cache-reuse-second-run.png}
+{Client dùng lại TGT/service ticket trong credential cache để truy cập Application Server mà không nhập lại mật khẩu}
+{fig:cache_reuse_second_run}
+{Ảnh cần thể hiện client để trống password, bỏ qua AS/TGS và truy cập service thành công bằng ticket trong cache.}
 
 Kiểm thử ASN.1/DER round-trip:
 \begin{itemize}
@@ -979,7 +1142,7 @@ Authentication failed. Exiting.
     \item Tự động hóa rotation policy, cleanup key history cũ và cảnh báo khi keytab lỗi thời.
     \item Thêm permission hardening cho các file keytab và credential cache nhị phân.
     \item Mở rộng rate limiting và cơ chế lockout tài khoản sang backend dùng chung nếu chạy nhiều KDC instance.
-    \item Tách config runtime thành các file cấu hình ngoài (YAML/INI).
+    \item Bổ sung kiểm tra schema/validation cho file \texttt{.env} và cơ chế profile cấu hình riêng cho local, LAN demo và test.
 \end{enumerate}
 
 \newpage

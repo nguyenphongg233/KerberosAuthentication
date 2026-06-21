@@ -75,7 +75,10 @@ def _tail(path: Path, lines: int = 60) -> str:
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="krb-demo-smoke-") as temp_dir_raw:
+    with tempfile.TemporaryDirectory(
+        prefix="krb-demo-smoke-",
+        ignore_cleanup_errors=True,
+    ) as temp_dir_raw:
         temp_dir = Path(temp_dir_raw)
         kdc_port = _free_port()
         app_port = _free_port()
