@@ -84,6 +84,7 @@
     {\fontsize{13pt}{1}\selectfont\textbf{ĐẠI HỌC BÁCH KHOA HÀ NỘI}} \\
     {\fontsize{13pt}{1}\selectfont\textbf{TRƯỜNG CÔNG NGHỆ THÔNG TIN VÀ TRUYỀN THÔNG}} \\
     \rule{6cm}{1pt} \\[1cm]
+    % LƯU Ý: Đảm bảo file ảnh "BVP-logo bk-rgb.jpg" nằm cùng thư mục với file .tex này khi biên dịch
     \IfFileExists{BVP-logo bk-rgb.jpg}{\includegraphics[scale=0.3]{BVP-logo bk-rgb.jpg}\\[0.5cm]}{\vspace{1.2cm}}
     \textbf{{\large BÁO CÁO BÀI TẬP LỚN}}\\[0.3cm]
     \textbf{{\large MÔN HỌC: NHẬP MÔN AN TOÀN THÔNG TIN}}\\[0.3cm]
@@ -271,15 +272,21 @@ Project đã mô phỏng và triển khai toàn diện các cấu trúc chính c
     box/.style={rectangle, rounded corners, draw=black, fill=gray!10, text width=4.2cm, align=center, minimum height=1cm},
     arrow/.style={->, thick}
 ]
+% Cột bên trái giữ nguyên text width mặc định
 \node[box] (client) {Client CLI\\ \texttt{client/client\_app.py}};
 \node[box, below=of client] (kdc) {KDC Server\\ AS Handler + TGS Handler};
 \node[box, below=of kdc] (cache) {KDC Database\\ Principal DB, Audit Log, Replay Cache};
-\node[box, right=3.5cm of kdc] (app) {Application Server\\ \texttt{fileserver/localhost@DEMO.LOCAL}};
-\node[box, below=of app] (keytab) {MIT Keytab v2\\ Service long-term key};
+
+% Cột bên phải: Ghi đè text width rộng hơn (6.5cm) để chữ không bị tràn
+\node[box, right=3.5cm of kdc, text width=6.5cm] (app) {Application Server\\ \texttt{fileserver/localhost@DEMO.LOCAL}};
+\node[box, below=of app, text width=6.5cm] (keytab) {MIT Keytab v2\\ Service long-term key};
 
 \draw[arrow] (client) -- node[left]{AS-REQ / AS-REP} (kdc);
-\draw[arrow] (client.east) -- node[above, pos=0.7]{TGS-REQ / TGS-REP} ++(3.2,0) |- (kdc.east);
-\draw[arrow] (client.south east) -- node[sloped, above, pos=0.4]{AP-REQ / AP-REP} (app.west);
+
+% Kéo dài đường gấp khúc (4.2 thay vì 3.2) và căn giữa chữ (pos=0.5) để không bị đè line
+\draw[arrow] (client.east) -- node[above, pos=0.5]{TGS-REQ / TGS-REP} ++(4.2,0) |- (kdc.east);
+
+\draw[arrow] (client.south east) -- node[sloped, above, pos=0.4]{AP-REQ / AP-REP} node[sloped, below, pos=0.4]{(HTTP Negotiate)} (app.west);
 \draw[arrow] (kdc) -- (cache);
 \draw[arrow] (app) -- (keytab);
 \end{tikzpicture}
@@ -309,7 +316,7 @@ Project đã mô phỏng và triển khai toàn diện các cấu trúc chính c
 \hline
 \texttt{kdc/kadmin\_web.py} & Web Console Glassmorphism quản trị principal và Audit Log (REST API) \\
 \hline
-\texttt{app\_server/service\_server.py} & Application Server, đọc keytab nhị phân, kiểm AP-REQ và trả AP-REP \\
+\texttt{app\_server/service\_server.py} & Application Server, đọc keytab nhị phân, xử lý AP-REQ/AP-REP qua HTTP Negotiate mô phỏng SPNEGO \\
 \hline
 \texttt{core/crypto.py} & nfold, derive-random (DK), CBC-CTS, HMAC-SHA1-96, PBKDF2-HMAC-SHA1 \\
 \hline
@@ -328,6 +335,8 @@ Project đã mô phỏng và triển khai toàn diện các cấu trúc chính c
 
 \subsection{Cấu hình runtime}
 
+Các process tự đọc file \texttt{.env} ở thư mục gốc repo trước khi lấy biến môi trường. Biến đã set trực tiếp trong shell vẫn có ưu tiên cao hơn \texttt{.env}. Để chạy LAN, project tách biến bind của server và biến target mà client dùng để kết nối.
+
 \begin{table}[H]
 \centering
 \renewcommand{\arraystretch}{1.25}
@@ -341,9 +350,9 @@ Project đã mô phỏng và triển khai toàn diện các cấu trúc chính c
 \hline
 \texttt{APP\_SERVER\_NAME} & \texttt{localhost} & Host component trong service principal \\
 \hline
-\texttt{KDC\_HOST}, \texttt{KDC\_PORT} & \texttt{127.0.0.1}, \texttt{4321} & Địa chỉ KDC \\
+\texttt{KDC\_BIND\_HOST}, \texttt{KDC\_HOST}, \texttt{KDC\_PORT} & \texttt{127.0.0.1}, \texttt{127.0.0.1}, \texttt{4321} & Địa chỉ KDC bind/listen và địa chỉ client connect \\
 \hline
-\texttt{APP\_SERVER\_HOST}, \texttt{APP\_SERVER\_PORT} & \texttt{127.0.0.1}, \texttt{8000} & Địa chỉ Application Server \\
+\texttt{APP\_SERVER\_BIND\_HOST}, \texttt{APP\_SERVER\_HOST}, \texttt{APP\_SERVER\_PORT} & \texttt{127.0.0.1}, \texttt{127.0.0.1}, \texttt{8000} & Địa chỉ Application Server bind/listen và địa chỉ client connect \\
 \hline
 \texttt{KDC\_DB\_PATH} & \texttt{kdc/database.db} & SQLite database của KDC \\
 \hline
@@ -352,6 +361,8 @@ Project đã mô phỏng và triển khai toàn diện các cấu trúc chính c
 \texttt{APP\_SERVER\_KEYTAB} & \texttt{app\_server/fileserver.keytab} & Keytab nhị phân của Application Server \\
 \hline
 \texttt{KRB5CCNAME} & \texttt{client/krb5cc\_demo} & Credential cache nhị phân của client \\
+\hline
+\texttt{KADMIN\_WEB\_HOST}, \texttt{KADMIN\_WEB\_PORT} & \texttt{127.0.0.1}, \texttt{8088} & Địa chỉ KAdmin Web local demo \\
 \hline
 \end{tabularx}
 \end{table}
@@ -470,7 +481,7 @@ Client -- KDC/AS & \texttt{AS-REQ}, \texttt{AS-REP}, \texttt{KRB-ERROR} & TCP t�
 \hline
 Client -- KDC/TGS & \texttt{TGS-REQ}, \texttt{TGS-REP}, \texttt{KRB-ERROR} & TCP tới \texttt{KDC\_HOST:KDC\_PORT}; client dùng TGT để xin service ticket, TGT và authenticator nằm trong \texttt{PA-TGS-REQ}. \\
 \hline
-Client -- Application Server & \texttt{AP-REQ}, \texttt{AP-REP}, \texttt{KRB-ERROR} & TCP tới \texttt{APP\_SERVER\_HOST:APP\_SERVER\_PORT}; client gửi service ticket để truy cập service và nhận xác thực hai chiều. \\
+Client -- Application Server & \texttt{AP-REQ}, \texttt{AP-REP}, HTTP 401/200 & HTTP tới \texttt{APP\_SERVER\_HOST:APP\_SERVER\_PORT}; client gửi \texttt{AP-REQ} qua header \texttt{Negotiate} để mô phỏng SPNEGO và xác thực hai chiều. \\
 \hline
 AS -- TGS & Dispatch nội bộ trong process KDC & AS và TGS là hai handler logic trong \texttt{kdc.kdc\_server}, không có socket riêng giữa hai server logic này. \\
 \hline
@@ -552,73 +563,164 @@ Project định nghĩa \texttt{EncryptedData} gồm \texttt{etype}, \texttt{kvno
 
 \section{CHI TIẾT LUỒNG GIAO THỨC}
 
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[>=stealth, scale=0.95, transform shape]
+    % Define vertical spacing
+    \def\dy{1.4}
+
+    % Draw Actors (Nodes)
+    \node[draw, rectangle, rounded corners, fill=blue!10, minimum width=2.5cm, minimum height=0.8cm, font=\bfseries] (Client) at (0,0) {Client};
+    \node[draw, rectangle, rounded corners, fill=red!10, minimum width=2.5cm, minimum height=0.8cm, font=\bfseries] (AS) at (4.5,0) {AS};
+    \node[draw, rectangle, rounded corners, fill=orange!10, minimum width=2.5cm, minimum height=0.8cm, font=\bfseries] (TGS) at (9,0) {TGS};
+    \node[draw, rectangle, rounded corners, fill=green!10, minimum width=2.5cm, minimum height=0.8cm, font=\bfseries] (App) at (13.5,0) {App Server};
+
+    % Draw Lifelines
+    \draw[dashed, thick, gray] (Client) -- (0, -8.5);
+    \draw[dashed, thick, gray] (AS) -- (4.5, -3.5);
+    \draw[dashed, thick, gray] (TGS) -- (9, -6.5);
+    \draw[dashed, thick, gray] (App) -- (13.5, -8.5);
+
+    % --- AS Exchange ---
+    \node[font=\bfseries\small, text=blue] at (2.25, -0.6) {AS Exchange};
+    % 1. AS-REQ
+    \draw[->, thick] (0, -1.2) -- node[above, font=\footnotesize] {1. AS-REQ (Cname, Pre-Auth)} (4.5, -1.2);
+    % 2. AS-REP
+    \draw[<-, thick] (0, -2.4) -- node[above, font=\footnotesize] {2. AS-REP (TGT, $K_{c\_tgs}$)} (4.5, -2.4);
+
+    % --- TGS Exchange ---
+    \node[font=\bfseries\small, text=orange!80!black] at (4.5, -3.4) {TGS Exchange};
+    % 3. TGS-REQ
+    \draw[->, thick] (0, -4.0) -- node[above, font=\footnotesize] {3. TGS-REQ (TGT, Authenticator)} (9, -4.0);
+    % 4. TGS-REP
+    \draw[<-, thick] (0, -5.2) -- node[above, font=\footnotesize] {4. TGS-REP (Service Ticket, $K_{c\_service}$)} (9, -5.2);
+
+    % --- AP Exchange ---
+    \node[font=\bfseries\small, text=green!60!black] at (6.75, -6.2) {AP Exchange};
+    % 5. AP-REQ
+    \draw[->, thick] (0, -6.8) -- node[above, font=\footnotesize] {5. AP-REQ (Service Ticket, Authenticator)} (13.5, -6.8);
+    % 6. AP-REP
+    \draw[<-, thick] (0, -8.0) -- node[above, font=\footnotesize] {6. AP-REP (Mutual Auth Timestamp)} (13.5, -8.0);
+
+    % Annotations/Notes on the side
+    \node[anchor=west, font=\scriptsize, text=gray!80!black, align=left] at (4.7, -1.2) {Kiểm tra Pre-auth\\\& cấp TGT};
+    \node[anchor=west, font=\scriptsize, text=gray!80!black, align=left] at (9.2, -4.0) {Xác minh TGT\\\& cấp Service Ticket};
+    \node[anchor=west, font=\scriptsize, text=gray!80!black, align=left] at (13.7, -6.8) {Giải mã Ticket,\\chống Replay};
+
+\end{tikzpicture}
+\caption{Sơ đồ tuần tự (Sequence Diagram) 3 pha xác thực của Kerberos V5}
+\label{fig:kerberos_sequence}
+\end{figure}
+
 \subsection{AS Exchange}
 
-Mục tiêu của AS Exchange là cấp TGT cho client sau khi client chứng minh biết khóa dài hạn \texttt{Kc}. Client không gửi password lên KDC.
+Mục tiêu của AS Exchange là xác thực người dùng ban đầu và cấp Ticket Granting Ticket (TGT). Để chứng minh danh tính, client phải cung cấp dữ liệu Pre-authentication được mã hóa bằng khóa dài hạn \texttt{Kc} của mình.
 
+\subsubsection{Cấu trúc thông điệp AS-REQ}
+Client gửi yêu cầu \texttt{AS-REQ} dưới dạng cấu trúc ASN.1/DER tới KDC. Nội dung chính bao gồm:
+\begin{itemize}
+    \item \textbf{Cname \& Realm}: Tên định danh của client (ví dụ: \texttt{alice@DEMO.LOCAL}).
+    \item \textbf{Sname}: Tên dịch vụ mong muốn, ở đây là \texttt{krbtgt/DEMO.LOCAL@DEMO.LOCAL}.
+    \item \textbf{Nonce}: Số ngẫu nhiên dùng để chống replay attack trên diện rộng.
+    \item \textbf{Pre-authentication Data (PA-DATA)}: Chứa timestamp (\texttt{ctime}, \texttt{cusec}) được mã hóa bằng khóa \texttt{Kc} của client (được dẫn xuất từ mật khẩu bằng PBKDF2-HMAC-SHA1).
+\end{itemize}
+
+\subsubsection{Thuật toán xử lý và phản hồi AS-REP}
 \begin{algorithm}[H]
-\caption{AS Exchange}
+\caption{Xử lý AS Exchange}
 \begin{algorithmic}[1]
-\State Client chuẩn hóa username thành \texttt{alice@DEMO.LOCAL}
-\State Client dẫn xuất \texttt{Kc = PBKDF2(password, salt)}
-\State Client tạo \texttt{PA-ENC-TIMESTAMP} gồm \texttt{ctime}/\texttt{cusec}; principal và realm nằm trong \texttt{req-body}
-\State Client mã hóa pre-authentication data bằng \texttt{Kc}
-\State Client gửi \texttt{AS-REQ} dạng DER tới KDC
-\State AS tìm principal trong database và lấy key đã dẫn xuất
-\State AS decrypt pre-authentication data, kiểm principal, realm và clock skew
-\State AS sinh \texttt{Kc\_tgs}, tạo TGT và mã hóa TGT bằng \texttt{Ktgs}
-\State AS trả \texttt{AS-REP} gồm TGT và encrypted client part
-\State Client decrypt client part bằng \texttt{Kc}, kiểm nonce và lưu TGT
+\State Client dẫn xuất khóa \texttt{Kc = PBKDF2(password, salt)} và tạo pre-authentication data
+\State Client mã hóa pre-authentication data bằng \texttt{Kc} và gửi \texttt{AS-REQ}
+\State AS tìm principal trong cơ sở dữ liệu và lấy khóa \texttt{Kc} tương ứng
+\State AS giải mã pre-authentication data. Nếu thất bại $\rightarrow$ trả về lỗi \texttt{KDC\_ERR\_PREAUTH\_FAILED}
+\State AS kiểm tra độ lệch thời gian (clock skew) của timestamp
+\State AS sinh ngẫu nhiên khóa phiên \texttt{Kc\_tgs}
+\State AS đóng gói \texttt{Kc\_tgs}, \texttt{nonce}, thời hạn vé vào \texttt{client\_part} và mã hóa bằng \texttt{Kc}
+\State AS đóng gói \texttt{Kc\_tgs}, thông tin client vào TGT và mã hóa bằng \texttt{Ktgs}
+\State AS trả về thông điệp \texttt{AS-REP}
+\State Client giải mã \texttt{client\_part} bằng \texttt{Kc}, kiểm tra \texttt{nonce} và lưu TGT
 \end{algorithmic}
 \end{algorithm}
 
-Các lỗi quan trọng:
+Thông điệp phản hồi \texttt{AS-REP} gồm hai phần chính:
 \begin{itemize}
-    \item Principal không tồn tại: \texttt{KDC\_ERR\_C\_PRINCIPAL\_UNKNOWN}.
-    \item Sai password hoặc pre-authentication không decrypt được: \texttt{KDC\_ERR\_PREAUTH\_FAILED}.
-    \item Realm sai: \texttt{KDC\_ERR\_WRONG\_REALM}.
-    \item Timestamp lệch quá mức: \texttt{KRB\_AP\_ERR\_SKEW}.
+    \item \textbf{TGT}: Được mã hóa bằng \texttt{Ktgs}. Bên trong chứa \texttt{Kc\_tgs}, danh tính client, thời gian xác thực (\texttt{authtime}), thời hạn (\texttt{endtime}) và mức gia hạn tối đa (\texttt{renew-till}). Client không giải mã được phần này.
+    \item \textbf{Encrypted Data (Client Part)}: Được mã hóa bằng \texttt{Kc}. Chứa khóa phiên \texttt{Kc\_tgs} và các mốc thời gian của vé. Client có thể đọc được phần này.
 \end{itemize}
 
 \subsection{TGS Exchange}
 
-Mục tiêu của TGS Exchange là dùng TGT để xin service ticket cho một dịch vụ cụ thể.
+Mục tiêu của TGS Exchange là dùng TGT để xin Service Ticket cho một dịch vụ cụ thể.
 
+\subsubsection{Cấu trúc thông điệp TGS-REQ}
+Client gửi \texttt{TGS-REQ} với nội dung chính như sau:
+\begin{itemize}
+    \item \textbf{Sname \& Realm}: Tên dịch vụ đích cần xin vé (ví dụ: \texttt{fileserver/localhost@DEMO.LOCAL}).
+    \item \textbf{Nonce}: Số ngẫu nhiên liên kết \texttt{TGS-REQ} và \texttt{TGS-REP}.
+    \item \textbf{PA-TGS-REQ (PA-DATA)}: Chứa \texttt{AP-REQ} nhúng. Bên trong bao gồm:
+    \begin{itemize}
+        \item \textbf{TGT}: Vé nhận được từ pha AS.
+        \item \textbf{Authenticator}: Chứa tên client, \texttt{ctime}, \texttt{cusec}. Toàn bộ Authenticator được mã hóa bằng khóa phiên \texttt{Kc\_tgs}.
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Thuật toán xử lý và phản hồi TGS-REP}
 \begin{algorithm}[H]
-\caption{TGS Exchange}
+\caption{Xử lý TGS Exchange}
 \begin{algorithmic}[1]
-\State Client lấy TGT và \texttt{Kc\_tgs} từ credential cache
-\State Client tạo authenticator mới và mã hóa bằng \texttt{Kc\_tgs}
-\State Client gửi \texttt{TGS-REQ} dạng DER; \texttt{PA-TGS-REQ} chứa \texttt{AP-REQ} với TGT và authenticator
-\State TGS chọn đúng TGS key theo principal/kvno/enctype rồi decrypt TGT
-\State TGS kiểm TGT dành cho đúng TGS, đúng realm và chưa hết hạn
-\State TGS decrypt authenticator bằng \texttt{Kc\_tgs}
-\State TGS kiểm principal match, clock skew và replay cache
-\State TGS kiểm service principal tồn tại và có loại \texttt{service} hoặc \texttt{tgs}
-\State TGS sinh \texttt{Kc\_service}, tạo service ticket và mã hóa bằng service key
-\State TGS trả \texttt{TGS-REP} cho client
-\State Client decrypt client part, kiểm nonce và lưu service ticket
+\State Client tạo Authenticator mới, mã hóa bằng \texttt{Kc\_tgs} và gửi \texttt{TGS-REQ}
+\State TGS giải mã TGT bằng \texttt{Ktgs} để lấy khóa phiên \texttt{Kc\_tgs}
+\State TGS giải mã Authenticator bằng \texttt{Kc\_tgs}
+\State TGS kiểm tra sự đồng nhất giữa tên client trong Authenticator và trong TGT
+\State TGS kiểm tra độ lệch thời gian và Replay Cache chống phát lại Authenticator
+\State TGS kiểm tra thời hạn TGT (Nếu TGT có cờ \texttt{renewable} và client yêu cầu gia hạn $\rightarrow$ cấp TGT mới)
+\State TGS sinh ngẫu nhiên khóa phiên \texttt{Kc\_service} cho Application Server
+\State TGS nhúng thông tin vai trò/nhóm (Authorization Data - RBAC) của client vào vé
+\State TGS đóng gói Service Ticket và mã hóa bằng khóa dịch vụ \texttt{Kservice}
+\State TGS đóng gói \texttt{Kc\_service}, \texttt{nonce} vào \texttt{client\_part} và mã hóa bằng \texttt{Kc\_tgs}
+\State TGS trả về thông điệp \texttt{TGS-REP}
 \end{algorithmic}
 \end{algorithm}
 
-\subsection{AP Exchange}
+Phản hồi \texttt{TGS-REP} gồm hai phần:
+\begin{itemize}
+    \item \textbf{Service Ticket}: Được mã hóa bằng \texttt{Kservice}. Chứa \texttt{Kc\_service}, dữ liệu phân quyền RBAC, và thời hạn hiệu lực.
+    \item \textbf{Encrypted Data (Client Part)}: Được mã hóa bằng \texttt{Kc\_tgs}. Chứa \texttt{Kc\_service} và \texttt{nonce}.
+\end{itemize}
 
-AP Exchange là pha client dùng service ticket để truy cập Application Server và thực hiện mutual authentication.
+\subsection{AP Exchange (Mô phỏng HTTP Negotiate/SPNEGO)}
 
+AP Exchange là bước cuối cùng, client sử dụng Service Ticket để xác thực với Application Server. Hệ thống mô phỏng kiểu HTTP Negotiate/SPNEGO trên header \texttt{Authorization}/\texttt{WWW-Authenticate}; project chưa dùng thư viện GSS-API thật.
+
+\subsubsection{Cấu trúc thông điệp AP-REQ}
+Bên trong chuỗi mã hóa Base64 gửi qua HTTP header \texttt{Authorization: Negotiate} là cấu trúc \texttt{AP-REQ} chứa:
+\begin{itemize}
+    \item \textbf{Service Ticket}: Vé nhận được từ TGS.
+    \item \textbf{Authenticator}: Chứa danh tính client, \texttt{ctime}, \texttt{cusec}, khóa con đề xuất (\texttt{client\_subkey}) và số thứ tự (\texttt{seq-number}). Toàn bộ được mã hóa bằng \texttt{Kc\_service}.
+\end{itemize}
+
+\subsubsection{Thuật toán xử lý và phản hồi AP-REP}
 \begin{algorithm}[H]
-\caption{AP Exchange}
+\caption{Xử lý AP Exchange qua HTTP Negotiate}
 \begin{algorithmic}[1]
-\State Client lấy service ticket và \texttt{Kc\_service} từ credential cache
-\State Client tạo authenticator mới, mã hóa bằng \texttt{Kc\_service}
-\State Client gửi \texttt{Authorization: Negotiate <Base64(AP-REQ DER)>} tới Application Server
-\State Server chọn keytab entry theo principal/kvno/enctype và decrypt service ticket
-\State Server kiểm ticket dành cho đúng service, đúng realm và chưa hết hạn
-\State Server decrypt authenticator bằng \texttt{Kc\_service}
-\State Server kiểm principal match, clock skew và replay cache
-\State Server trả \texttt{AP-REP} mã hóa bằng client subkey nếu có, nếu không thì dùng \texttt{Kc\_service}; nội dung chứa lại \texttt{ctime}/\texttt{cusec} của authenticator cùng subkey/sequence number của server
-\State Client decrypt \texttt{AP-REP} và xác nhận \texttt{ctime}/\texttt{cusec} khớp để hoàn tất mutual authentication
+\State Client gửi HTTP GET không xác thực tới Application Server
+\State Server phản hồi HTTP 401 Unauthorized kèm header \texttt{WWW-Authenticate: Negotiate}
+\State Client tạo \texttt{AP-REQ} và mã hóa Base64 gửi lại qua header \texttt{Authorization: Negotiate}
+\State Server giải mã Base64 và dùng khóa từ \texttt{keytab} để giải mã Service Ticket
+\State Server trích xuất \texttt{Kc\_service} và dữ liệu phân quyền nhóm (RBAC/Authorization Data) từ Ticket
+\State Server dùng \texttt{Kc\_service} giải mã Authenticator
+\State Server kiểm tra \texttt{ctime/cusec} chống replay, và đánh giá quyền truy cập của người dùng
+\State Server tạo \texttt{AP-REP} mã hóa bằng \texttt{client\_subkey} (hoặc \texttt{Kc\_service}) chứa \texttt{ctime/cusec} của client, \texttt{server\_subkey} và \texttt{seq-number}
+\State Server trả về HTTP 200 OK với header \texttt{WWW-Authenticate: Negotiate <Base64(AP-REP)>}
+\State Client giải mã \texttt{AP-REP} và xác nhận Mutual Authentication
 \end{algorithmic}
 \end{algorithm}
+
+Thông điệp \texttt{AP-REP} dùng để xác thực ngược (Mutual Authentication):
+\begin{itemize}
+    \item \textbf{Timestamp (\texttt{ctime/cusec})}: Lấy từ Authenticator của client. Client kiểm tra giá trị này để đảm bảo Server hợp pháp đã giải mã được vé.
+    \item \textbf{Subkey \& Seq-number}: Server sinh \texttt{server\_subkey} và \texttt{seq-number} trong \texttt{AP-REP} để mô phỏng bước đàm phán khóa con. Project hiện chưa triển khai lớp wrap/unwrap dữ liệu ứng dụng sau AP Exchange.
+\end{itemize}
 
 \section{BẢO MẬT VÀ PHÂN TÍCH RỦI RO}
 
@@ -639,7 +741,7 @@ Ticket mã hóa cho server đích & TGT chỉ TGS đọc được; service ticke
 \hline
 Authenticator có \texttt{ctime/cusec} & Giới hạn replay window và tăng độ phân giải timestamp. \\
 \hline
-Persistent replay cache & Authenticator đã dùng được lưu trong SQLite, không chỉ nằm trong memory process. \\
+Persistent replay cache & Authenticator đã dùng được lưu trong SQLite, không chỉ nằm trong memory process. Khi có lần kiểm tra mới, các bản ghi cũ hơn cửa sổ \texttt{MAX\_CLOCK\_SKEW} được xóa theo \texttt{seen\_at} để tối ưu dung lượng DB. \\
 \hline
 Mutual authentication & Client kiểm \texttt{AP-REP} có \texttt{ctime}/\texttt{cusec} khớp với authenticator đã gửi. \\
 \hline
@@ -648,6 +750,12 @@ Keytab & Application Server lấy service key từ keytab thay vì hard-code pas
 ASN.1/DER outer message & Message AS/TGS/AP/KRB-ERROR/Ticket bám cấu trúc wire format của RFC 4120 ở lớp ngoài. \\
 \hline
 Audit log & KDC ghi nhận các sự kiện chính như database init, principal upsert, cấp TGT và cấp service ticket. \\
+\hline
+Phân quyền RBAC (Authorization Data) & KDC nhúng nhóm/vai trò của người dùng vào vé, Application Server trích xuất để kiểm soát truy cập. \\
+\hline
+Bắt tay Subkey \& Seq-number & Mô phỏng server trả \texttt{server\_subkey} và \texttt{seq-number} trong \texttt{AP-REP}; chưa triển khai lớp bảo vệ message ứng dụng tiếp theo. \\
+\hline
+Gia hạn vé (TGT Renewal) & Client có thể yêu cầu cấp lại TGT mới trước khi \texttt{endtime} hết hạn, miễn là chưa quá \texttt{renew-till}. \\
 \hline
 \end{tabularx}
 \end{table}
@@ -660,7 +768,7 @@ Attacker không nhìn thấy password vì password không được gửi qua m�
 
 \subsubsection{Attacker phát lại authenticator}
 
-Nếu attacker gửi lại cùng TGS authenticator hoặc AP authenticator, replay cache phát hiện fingerprint đã tồn tại và trả \texttt{KRB\_AP\_ERR\_REPEAT}. Điều này mô phỏng cơ chế replay protection của Kerberos.
+Nếu attacker gửi lại cùng TGS authenticator hoặc AP authenticator, replay cache phát hiện fingerprint đã tồn tại và trả \texttt{KRB\_AP\_ERR\_REPEAT}. Điều này mô phỏng cơ chế replay protection của Kerberos. Để tránh tình trạng cơ sở dữ liệu bị phình to (bloat) theo thời gian, mỗi lần kiểm tra replay sẽ xóa các entry có \texttt{seen\_at} cũ hơn cửa sổ dung sai thời gian.
 
 \subsubsection{Attacker lấy credential cache}
 
@@ -794,7 +902,7 @@ Kiểm thử regression in-process:
 python -m unittest discover -s tests -p "test_*.py" -v
 \end{lstlisting}
 
-Kết quả: 32 regression tests đều pass. Các case bao gồm sai password, principal không tồn tại, thiếu pre-auth, timestamp cũ, account lockout tạm thời, replay authenticator ở TGS và Application Server, AP wrong-service kể cả khi keytab chứa nhiều service key, TGT/service ticket bị sửa, ticket hết hạn/chưa hiệu lực, service không tồn tại, TGT renewal ở TGS handler và qua \texttt{client\_app.renew\_tgt\_exchange()}, key history/kvno rotation, KAdmin CLI \texttt{cpw}/\texttt{ktadd --all-versions}, KAdmin Web API, keytab nhiều kvno, ccache metadata, ASN.1/DER round-trip và E2E subprocess mở KDC/App Server trên port tạm gồm cả negative case sai password. Bộ test này dùng runtime tạm nên không ảnh hưởng database/keytab/cache thật trong repository.
+Kết quả: 33 regression tests đều pass. Các case bao gồm sai password, principal không tồn tại, thiếu pre-auth, timestamp cũ, account lockout tạm thời, replay authenticator ở TGS và Application Server, AP wrong-service kể cả khi keytab chứa nhiều service key, TGT/service ticket bị sửa, ticket hết hạn/chưa hiệu lực, service không tồn tại, TGT renewal ở TGS handler và qua \texttt{client\_app.renew\_tgt\_exchange()}, key history/kvno rotation, KAdmin CLI \texttt{cpw}/\texttt{ktadd --all-versions}, KAdmin Web API, cấu hình \texttt{.env}, Kerberos-style CLI \texttt{kinit/klist/kvno/kaccess/kdestroy}, keytab nhiều kvno, ccache metadata, ASN.1/DER round-trip và E2E subprocess mở KDC/App Server trên port tạm gồm cả negative case sai password. Bộ test này dùng runtime tạm nên không ảnh hưởng database/keytab/cache thật trong repository.
 
 Demo luồng bảo mật có giải thích message và tấn công:
 
@@ -880,7 +988,7 @@ Authentication failed. Exiting.
 
 Qua quá trình nghiên cứu và triển khai, nhóm đã xây dựng được một hệ thống mô phỏng Kerberos V5 tương đối đầy đủ ở mức học thuật. Hệ thống thể hiện rõ vai trò của KDC, AS, TGS, Application Server, ticket, session key và authenticator. Mật khẩu không được gửi qua mạng; client chứng minh danh tính thông qua pre-authentication; TGT được dùng để xin service ticket; Application Server xác thực client bằng service ticket và authenticator; client xác thực ngược lại server bằng AP-REP.
 
-So với mô phỏng đơn giản ban đầu, project hiện tại đã tiến sát các tiêu chuẩn RFC 4120, RFC 3961, và RFC 3962 nhờ bổ sung principal/realm chuẩn, dẫn xuất khóa PBKDF2-HMAC-SHA1 có salt, định dạng nhị phân MIT Keytab v2 và MIT ccache v4 subset, cơ chế **Xác thực chéo Realm (Cross-Realm Trust)**, phân quyền nhóm (RBAC/Authorization Data), đàm phán subkey/seq-number, replay cache bền vững, audit log, outer/inner wire messages dạng ASN.1/DER và thuật toán mã hóa đối xứng AES-CTS kết hợp checksum HMAC-SHA1-96 chuẩn hóa cùng cơ chế Key Usage. Tuy nhiên, nhóm cũng xác định rõ giới hạn: đây vẫn chưa phải Kerberos production hoàn toàn do socket TCP chưa tích hợp TLS/mTLS và chưa tương thích trực tiếp hoàn toàn với nhân hệ thống Active Directory.
+So với mô phỏng đơn giản ban đầu, project hiện tại đã tiến sát các tiêu chuẩn RFC 4120, RFC 3961, và RFC 3962 nhờ bổ sung principal/realm chuẩn, dẫn xuất khóa PBKDF2-HMAC-SHA1 có salt, định dạng nhị phân MIT Keytab v2 và MIT ccache v4 subset, cơ chế \textbf{Xác thực chéo Realm (Cross-Realm Trust)}, phân quyền nhóm (RBAC/Authorization Data), đàm phán subkey/seq-number, gia hạn vé TGT, replay cache bền vững, audit log, outer/inner wire messages dạng ASN.1/DER, thao tác client kiểu \texttt{kinit/klist/kvno/kaccess/kdestroy} và thuật toán mã hóa đối xứng AES-CTS kết hợp checksum HMAC-SHA1-96 chuẩn hóa cùng cơ chế Key Usage. Tuy nhiên, nhóm cũng xác định rõ giới hạn: đây vẫn chưa phải Kerberos production hoàn toàn do socket TCP chưa tích hợp TLS/mTLS và chưa tương thích trực tiếp hoàn toàn với nhân hệ thống Active Directory.
 
 Kết quả đạt được đáp ứng mục tiêu môn học: hiểu cơ sở lý thuyết của Kerberos, phân tích được các rủi ro bảo mật, và tự xây dựng được chương trình mô phỏng có kiểm thử để minh họa toàn bộ luồng xác thực.
 

@@ -50,11 +50,15 @@ SERVICE_TICKET_FLAGS = ["pre_authent"]
 # Network Configuration
 # ============================================================
 KDC_HOST = os.getenv("KDC_HOST", "127.0.0.1")
+KDC_BIND_HOST = os.getenv("KDC_BIND_HOST", KDC_HOST)
 KDC_PORT = int(os.getenv("KDC_PORT", "4321"))
 APP_SERVER_HOST = os.getenv("APP_SERVER_HOST", "127.0.0.1")
+APP_SERVER_BIND_HOST = os.getenv("APP_SERVER_BIND_HOST", APP_SERVER_HOST)
 APP_SERVER_PORT = int(os.getenv("APP_SERVER_PORT", "8000"))
 APP_SERVICE_NAME = os.getenv("APP_SERVICE_NAME", "fileserver")
 APP_SERVER_NAME = os.getenv("APP_SERVER_NAME", "localhost")
+KADMIN_WEB_HOST = os.getenv("KADMIN_WEB_HOST", "127.0.0.1")
+KADMIN_WEB_PORT = int(os.getenv("KADMIN_WEB_PORT", "8088"))
 WIRE_FORMAT = os.getenv("KRB_WIRE_FORMAT", "der").lower()
 
 # ============================================================

@@ -42,6 +42,7 @@ from core.keytab import load_keytab
 from core.messages import (
     AP_REP,
     AP_REQ,
+    APP_SERVER_BIND_HOST,
     APP_SERVER_HOST,
     APP_SERVER_PORT,
     APP_SERVICE_PRINCIPAL,
@@ -499,12 +500,14 @@ def start_service_server():
         print(f"[FileServer] WARNING: Keytab file not found at '{KEYTAB_PATH}'. "
               f"It will be loaded dynamically when requests arrive.")
 
-    server_address = (APP_SERVER_HOST, APP_SERVER_PORT)
+    server_address = (APP_SERVER_BIND_HOST, APP_SERVER_PORT)
     httpd = HTTPServer(server_address, NegotiateRequestHandler)
 
     print(f"\n{'='*60}")
     print("  Kerberos HTTP Application Server (File Server)")
-    print(f"  Listening on http://{APP_SERVER_HOST}:{APP_SERVER_PORT}/")
+    print(f"  Listening on http://{APP_SERVER_BIND_HOST}:{APP_SERVER_PORT}/")
+    if APP_SERVER_BIND_HOST != APP_SERVER_HOST:
+        print(f"  Client target: http://{APP_SERVER_HOST}:{APP_SERVER_PORT}/")
     print(f"  Keytab:    {KEYTAB_PATH}")
     print(f"{'='*60}")
     print("[FileServer] Waiting for HTTP requests...\n")

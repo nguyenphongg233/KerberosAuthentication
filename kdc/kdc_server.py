@@ -16,7 +16,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from core.messages import AS_REQ, TGS_REQ, KDC_HOST, KDC_PORT
+from core.messages import AS_REQ, TGS_REQ, KDC_BIND_HOST, KDC_HOST, KDC_PORT
 from core.network import receive_message, send_message
 from kdc.as_handler import handle_as_request
 from kdc.database import DB_PATH, connect, init_database
@@ -68,14 +68,16 @@ def start_kdc_server():
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((KDC_HOST, KDC_PORT))
+    server_socket.bind((KDC_BIND_HOST, KDC_PORT))
     server_socket.listen(5)
 
     print(f"[KDC] Database initialized at '{DB_PATH}'")
     print(f"[KDC] Registered principals: {registered}")
     print(f"\n{'='*60}")
     print("  Kerberos KDC Server")
-    print(f"  Listening on {KDC_HOST}:{KDC_PORT}")
+    print(f"  Listening on {KDC_BIND_HOST}:{KDC_PORT}")
+    if KDC_BIND_HOST != KDC_HOST:
+        print(f"  Client target: {KDC_HOST}:{KDC_PORT}")
     print(f"{'='*60}")
     print("[KDC] Waiting for connections...\n")
 

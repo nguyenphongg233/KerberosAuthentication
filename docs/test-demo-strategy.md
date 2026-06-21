@@ -7,7 +7,7 @@ Tài liệu này gom các lệnh kiểm tra và kịch bản demo nên dùng khi
 | Tầng | Lệnh | Mục đích |
 | --- | --- | --- |
 | Compile check | `python -m compileall core kdc app_server client tests scratch\test_cross_realm.py scratch\demo_security_flows.py scratch\demo_tgt_renewal.py` | Bắt lỗi cú pháp/import ở các module chính. |
-| Regression in-process | `python -m unittest discover -s tests -p "test_*.py" -v` | Kiểm 32 tests cho preauth, lockout, replay, AP, renewal, kvno/key rotation, keytab, ccache, KAdmin Web API và E2E. |
+| Regression in-process | `python -m unittest discover -s tests -p "test_*.py" -v` | Kiểm 33 tests cho preauth, lockout, replay, AP, renewal, kvno/key rotation, keytab, ccache, `.env`, KAdmin Web API và E2E. |
 | Verbose security-flow demo | `python scratch/demo_security_flows.py` | In rõ message nào được gửi, attacker tác động gì, hệ thống trả lỗi/chặn ra sao. |
 | Verbose TGT renewal demo | `python scratch/demo_tgt_renewal.py` | In riêng luồng TGT hết hạn nhưng còn `renew_till`, renew thành công rồi xin service ticket. |
 | Smoke HTTP/cross-realm | `python scratch/test_cross_realm.py` | Chạy KDC + App Server bằng temp runtime, kiểm AS/TGS/AP qua HTTP Negotiate-style và cross-realm demo. |
@@ -55,6 +55,7 @@ Mỗi cơ chế chính có một file test riêng, có thể chạy lẻ hoặc 
 | `tests/test_client_tgt_renewal.py` | `client_app.renew_tgt_exchange()` renew cache rồi xin service ticket | Chứng minh renewal chạy được qua client-level flow, không chỉ gọi TGS handler trực tiếp. |
 | `tests/test_kadmin_cli.py` | `cpw`, `ktadd --all-versions`, audit | Chứng minh key rotation có kvno/key history và keytab export đủ version. |
 | `tests/test_kadmin_web_api.py` | Add/list/toggle/delete principal, audit log | Chứng minh Web API quản trị nối đúng vào database/audit. |
+| `tests/test_env_config.py` | `.env` loader không override shell env | Chứng minh cấu hình runtime có thể đặt trong `.env` nhưng test/subprocess vẫn override được an toàn. |
 | `tests/test_e2e_subprocess.py` | KDC/App Server subprocess + client CLI happy path và wrong password | Chứng minh luồng thật qua socket/HTTP/input CLI, gồm cả case fail ở AS. |
 
 ## Verbose Security-Flow Demo

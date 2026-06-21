@@ -202,57 +202,67 @@ Các lệnh này dùng cùng cache file với `client.client_app`, mặc định
 
 ## Cấu Hình Runtime
 
+Tất cả process tự đọc file `.env` ở thư mục gốc repo trước khi đọc `os.getenv()`. Biến đã set sẵn trong shell vẫn thắng giá trị trong `.env`, nên test hoặc subprocess vẫn có thể override cấu hình. File `.env` chứa cấu hình local và không được commit; dùng `.env.example` làm template.
+
 | Biến môi trường | Default | Ý nghĩa |
 | --- | --- | --- |
 | `KRB_REALM` | `DEMO.LOCAL` | Realm mặc định. Nên set trước khi start mọi process |
 | `APP_SERVICE_NAME` | `fileserver` | Service component trong service principal |
 | `APP_SERVER_NAME` | `localhost` | Host component trong service principal |
-| `KDC_HOST` | `127.0.0.1` | Địa chỉ bind của KDC và target của client |
+| `KDC_BIND_HOST` | Giá trị `KDC_HOST` | Địa chỉ KDC bind/listen |
+| `KDC_HOST` | `127.0.0.1` | Địa chỉ client dùng để kết nối KDC |
 | `KDC_PORT` | `4321` | Port bind của KDC và target của client |
 | `KDC_DB_PATH` | `kdc/database.db` | SQLite database của KDC |
-| `APP_SERVER_HOST` | `127.0.0.1` | Địa chỉ bind của Application Server và target của client |
+| `APP_SERVER_BIND_HOST` | Giá trị `APP_SERVER_HOST` | Địa chỉ Application Server bind/listen |
+| `APP_SERVER_HOST` | `127.0.0.1` | Địa chỉ client dùng để kết nối Application Server |
 | `APP_SERVER_PORT` | `8000` | Port bind của Application Server và target của client |
 | `KRB_WIRE_FORMAT` | `der` | `der` dùng ASN.1/DER, `json` chỉ dùng khi debug legacy với bytes được bọc Base64 |
 | `APP_SERVER_KEYTAB` | `app_server/<APP_SERVICE_NAME>.keytab` | File keytab Application Server đọc khi start |
 | `KRB5CCNAME` | `client/krb5cc_demo` | File credential cache của client |
 | `KRB_REPLAY_CACHE` | Giá trị `KDC_DB_PATH` | SQLite file chứa replay cache |
+| `KADMIN_WEB_HOST` | `127.0.0.1` | Địa chỉ bind của KAdmin Web |
+| `KADMIN_WEB_PORT` | `8088` | Port KAdmin Web |
 | `PYTHONIOENCODING` | Không set | Có thể set `utf-8` nếu terminal Windows gặp lỗi encoding |
 
 Các biến liên quan realm, service, host và keytab phải nhất quán giữa KDC, Application Server và Client. Nếu đổi `KRB_REALM`, `APP_SERVICE_NAME` hoặc `APP_SERVER_NAME`, hãy set cùng giá trị ở cả ba terminal trước khi chạy.
 
-Mặc định hệ thống gửi message qua TCP bằng ASN.1/DER. Nếu cần debug bằng payload JSON, set cùng biến ở cả ba terminal:
+Mặc định hệ thống gửi message qua TCP bằng ASN.1/DER. Nếu cần debug bằng payload JSON, sửa trong `.env`:
 
-```powershell
-$env:KRB_WIRE_FORMAT = "json"
+```dotenv
+KRB_WIRE_FORMAT=json
 ```
 
-Ví dụ đổi port KDC:
+Ví dụ đổi port:
 
-```powershell
-$env:KDC_PORT = "4322"
-python -m kdc.kdc_server
+```dotenv
+KDC_PORT=4322
+APP_SERVER_PORT=8001
 ```
 
-Client phải dùng cùng port:
+Ví dụ chạy 3 máy trong cùng LAN:
 
-```powershell
-$env:KDC_PORT = "4322"
-python -m client.client_app
+```dotenv
+# Máy KDC
+KDC_BIND_HOST=0.0.0.0
+KDC_HOST=<IP_MAY_KDC>
 ```
 
-Ví dụ đổi port Application Server:
-
-```powershell
-$env:APP_SERVER_PORT = "8001"
-python -m app_server.service_server
+```dotenv
+# Máy Application Server
+KDC_HOST=<IP_MAY_KDC>
+APP_SERVER_BIND_HOST=0.0.0.0
+APP_SERVER_HOST=<IP_MAY_APP_SERVER>
+APP_SERVER_NAME=<IP_MAY_APP_SERVER_HOAC_HOSTNAME>
 ```
 
-Client terminal cũng phải set:
-
-```powershell
-$env:APP_SERVER_PORT = "8001"
-python -m client.client_app
+```dotenv
+# Máy Client
+KDC_HOST=<IP_MAY_KDC>
+APP_SERVER_HOST=<IP_MAY_APP_SERVER>
+APP_SERVER_NAME=<GIONG_GIA_TRI_DA_DUNG_KHI_TAO_KEYTAB>
 ```
+
+Khi dùng LAN, mở firewall TCP `KDC_PORT` trên máy KDC và `APP_SERVER_PORT` trên máy Application Server. Nếu đổi `APP_SERVER_NAME`, hãy tạo/export lại keytab service cùng principal mới, ví dụ `fileserver/<APP_SERVER_NAME>@DEMO.LOCAL`.
 
 ## Principal Mặc Định
 

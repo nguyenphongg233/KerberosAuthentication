@@ -22,7 +22,7 @@ from kdc.database import (
     get_principal,
     upsert_principal,
 )
-from core.messages import REALM
+from core.messages import KADMIN_WEB_HOST, KADMIN_WEB_PORT, REALM
 from core.keytab import write_keytab
 from core.crypto import str_to_key
 
@@ -1152,12 +1152,12 @@ class KAdminWebHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode("utf-8"))
 
 
-def start_web_server(port=8088):
-    server_address = ("127.0.0.1", port)
+def start_web_server(host=KADMIN_WEB_HOST, port=KADMIN_WEB_PORT):
+    server_address = (host, port)
     httpd = HTTPServer(server_address, KAdminWebHandler)
     print(f"\\n{'='*60}")
     print("  KAdmin Web Console & REST API Server")
-    print(f"  Url:       http://127.0.0.1:{port}/")
+    print(f"  Url:       http://{host}:{port}/")
     print(f"{'='*60}")
     print("[KAdminWeb] Waiting for requests...\\n")
     try:
