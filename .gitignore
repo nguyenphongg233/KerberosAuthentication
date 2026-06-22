@@ -1,26 +1,73 @@
+# Python bytecode / caches
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and temporary test output
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
+scratch/test_alice_key.py
+
+# Legacy/cache-only directories from older layouts
+as_server/
+service_server/
+tgs_server/
+KDC_database/
+
+# Local tooling state
+.codegraph/
+.cursor/
+.gemini/
+GEMINI.md
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
+
+# Kerberos demo runtime artifacts and secrets
+*.keytab
+*.keytab.json
+client/krb5cc*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+*.out
+*.err
+
+# Environment / local config
+.env
+.env.*
+!.env.example
+
+# LaTeX generated files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.run.xml
+*.synctex.gz
+*.toc
+
+# OS files
 .DS_Store
+Thumbs.db

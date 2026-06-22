@@ -1,1 +1,1 @@
-# Client package
+# client package - Client Application
