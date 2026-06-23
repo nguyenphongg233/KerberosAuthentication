@@ -7,7 +7,7 @@ Tài liệu này gom các lệnh kiểm tra và kịch bản demo nên dùng khi
 | Tầng | Lệnh | Mục đích |
 | --- | --- | --- |
 | Compile check | `python -m compileall core kdc app_server client tests scratch\test_cross_realm.py scratch\demo_security_flows.py scratch\demo_tgt_renewal.py` | Bắt lỗi cú pháp/import ở các module chính. |
-| Regression in-process | `python -m unittest discover -s tests -p "test_*.py" -v` | Kiểm 34 tests cho preauth, lockout, replay, AP, protected service catalog, renewal, kvno/key rotation, keytab, ccache, `.env`, KAdmin Web API và E2E. |
+| Regression in-process | `python -m unittest discover -s tests -p "test_*.py" -v` | Kiểm 35 tests cho preauth, lockout, replay, AP, protected service catalog, renewal, kvno/key rotation, keytab, ccache, `.env`, KAdmin Web API/statistics và E2E. |
 | Verbose security-flow demo | `python scratch/demo_security_flows.py` | In rõ message nào được gửi, attacker tác động gì, hệ thống trả lỗi/chặn ra sao. |
 | Verbose TGT renewal demo | `python scratch/demo_tgt_renewal.py` | In riêng luồng TGT hết hạn nhưng còn `renew_till`, renew thành công rồi xin service ticket. |
 | Smoke HTTP/cross-realm | `python scratch/test_cross_realm.py` | Chạy KDC + App Server bằng temp runtime, kiểm AS/TGS/AP qua HTTP Negotiate-style và cross-realm demo. |
@@ -54,7 +54,7 @@ Mỗi cơ chế chính có một file test riêng, có thể chạy lẻ hoặc 
 | `tests/test_tgt_renewal.py` | TGT renewal success/fail | Chứng minh `renew_till` kiểm soát việc gia hạn TGT. |
 | `tests/test_client_tgt_renewal.py` | `client_app.renew_tgt_exchange()` renew cache rồi xin service ticket | Chứng minh renewal chạy được qua client-level flow, không chỉ gọi TGS handler trực tiếp. |
 | `tests/test_kadmin_cli.py` | `cpw`, `ktadd --all-versions`, audit | Chứng minh key rotation có kvno/key history và keytab export đủ version. |
-| `tests/test_kadmin_web_api.py` | Add/list/toggle/delete principal, audit log | Chứng minh Web API quản trị nối đúng vào database/audit. |
+| `tests/test_kadmin_web_api.py` | Add/list/toggle/delete principal, audit log, statistics | Chứng minh Web API quản trị nối đúng vào database/audit và dashboard tính đúng success rate. |
 | `tests/test_env_config.py` | `.env` loader không override shell env | Chứng minh cấu hình runtime có thể đặt trong `.env` nhưng test/subprocess vẫn override được an toàn. |
 | `tests/test_e2e_subprocess.py` | KDC/App Server subprocess + client CLI happy path và wrong password | Chứng minh luồng thật qua socket/HTTP/input CLI, gồm cả case fail ở AS. |
 
@@ -120,7 +120,7 @@ Script này in rõ:
 | Client-level renewal | `python tests/test_client_tgt_renewal.py` | Client gọi `renew_tgt_exchange()`, cập nhật cache và dùng TGT mới cho TGS Exchange. |
 | Kerberos-style CLI | `python -m client.kinit alice`, `python -m client.klist`, `python -m client.kvno fileserver`, `python -m client.kaccess fileserver`, `python -m client.kdestroy` | Chứng minh thao tác người dùng cơ bản: lấy TGT, xem cache, xin service ticket, truy cập service, nhận protected file catalog và xóa cache. |
 | Key rotation | Regression test `test_old_tgt_survives_tgs_key_rotation` | TGT cũ vẫn dùng được nhờ `principal_keys` và `kvno`. |
-| KAdmin Web API | `python tests/test_kadmin_web_api.py` | REST API add/list/toggle/delete principal và ghi audit log. |
+| KAdmin Web API | `python tests/test_kadmin_web_api.py` | REST API add/list/toggle/delete principal, ghi audit log và thống kê `/api/statistics` không bị lệch success rate. |
 | Account lockout | `python tests/test_as_preauth.py` | Sau nhiều lần pre-auth fail, AS trả `KDC_ERR_CLIENT_REVOKED` cho tới khi hết lockout. |
 | E2E subprocess | `python tests/test_e2e_subprocess.py` | KDC/App Server chạy bằng subprocess trên port tạm, client CLI hoàn tất đủ AS/TGS/AP; wrong password bị chặn ngay AS. |
 

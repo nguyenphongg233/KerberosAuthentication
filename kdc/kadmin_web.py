@@ -998,24 +998,57 @@ class KAdminWebHandler(BaseHTTPRequestHandler):
             cursor.execute("SELECT COUNT(*) FROM principals")
             total_principals = cursor.fetchone()[0]
 
-            # Count AS requests
-            cursor.execute("SELECT COUNT(*) FROM audit_log WHERE event = 'as_req'")
+            # Count AS/TGS outcomes using the actual audit event names emitted by
+            # the handlers. Successful AS requests are logged as tgt_issued;
+            # pre-authentication/lookup failures are logged as preauth/as_req.
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM audit_log
+                WHERE component = 'AS'
+                  AND event IN ('as_req', 'preauth', 'tgt_issued')
+                  AND outcome IN ('success', 'failure')
+                """
+            )
             as_requests = cursor.fetchone()[0]
 
-            # Count TGS requests
-            cursor.execute("SELECT COUNT(*) FROM audit_log WHERE event = 'tgs_req'")
+            # TGS has several validation stages, but each handled request emits
+            # one success/failure audit outcome under component TGS.
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM audit_log
+                WHERE component = 'TGS'
+                  AND outcome IN ('success', 'failure')
+                """
+            )
             tgs_requests = cursor.fetchone()[0]
 
-            # Count failed outcomes
-            cursor.execute("SELECT COUNT(*) FROM audit_log WHERE outcome = 'failure'")
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM audit_log
+                WHERE component IN ('AS', 'TGS')
+                  AND outcome = 'success'
+                """
+            )
+            successful_requests = cursor.fetchone()[0]
+
+            # Count failed authentication outcomes only, not kadmin/db events.
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM audit_log
+                WHERE component IN ('AS', 'TGS')
+                  AND outcome = 'failure'
+                """
+            )
             failed_requests = cursor.fetchone()[0]
 
-            total_requests = as_requests + tgs_requests
+            total_requests = successful_requests + failed_requests
             success_rate = 100.0
             if total_requests > 0:
-                success_rate = ((total_requests - failed_requests) / total_requests) * 100.0
-                if success_rate < 0:
-                    success_rate = 0.0
+                success_rate = (successful_requests / total_requests) * 100.0
 
             data = {
                 "total_principals": total_principals,
