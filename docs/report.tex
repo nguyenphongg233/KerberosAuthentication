@@ -950,13 +950,13 @@ Kiểm thử regression in-process:
 python -m unittest discover -s tests -p "test_*.py" -v
 \end{lstlisting}
 
-Kết quả: 34 regression tests đều pass. Các case bao gồm sai password, principal không tồn tại, thiếu pre-auth, timestamp cũ, account lockout tạm thời, replay authenticator ở TGS và Application Server, AP wrong-service kể cả khi keytab chứa nhiều service key, AP hợp lệ trả protected file catalog theo group trong service ticket, TGT/service ticket bị sửa, ticket hết hạn/chưa hiệu lực, service không tồn tại, TGT renewal ở TGS handler và qua \texttt{client\_app.renew\_tgt\_exchange()}, key history/kvno rotation, KAdmin CLI \texttt{cpw}/\texttt{ktadd --all-versions}, KAdmin Web API, cấu hình \texttt{.env}, Kerberos-style CLI \texttt{kinit/klist/kvno/kaccess/kdestroy}, keytab nhiều kvno, ccache metadata, ASN.1/DER round-trip và E2E subprocess mở KDC/App Server trên port tạm gồm cả negative case sai password. Bộ test này dùng runtime tạm nên không ảnh hưởng database/keytab/cache thật trong repository.
+Kết quả: 35 regression tests đều pass. Các case bao gồm sai password, principal không tồn tại, thiếu pre-auth, timestamp cũ, account lockout tạm thời, replay authenticator ở TGS và Application Server, AP wrong-service kể cả khi keytab chứa nhiều service key, AP hợp lệ trả protected file catalog theo group trong service ticket, TGT/service ticket bị sửa, ticket hết hạn/chưa hiệu lực, service không tồn tại, TGT renewal ở TGS handler và qua \texttt{client\_app.renew\_tgt\_exchange()}, key history/kvno rotation, KAdmin CLI \texttt{cpw}/\texttt{ktadd --all-versions}, KAdmin Web API gồm cả thống kê \texttt{/api/statistics}, cấu hình \texttt{.env}, Kerberos-style CLI \texttt{kinit/klist/kvno/kaccess/kdestroy}, keytab nhiều kvno, ccache metadata, ASN.1/DER round-trip và E2E subprocess mở KDC/App Server trên port tạm gồm cả negative case sai password. Bộ test này dùng runtime tạm nên không ảnh hưởng database/keytab/cache thật trong repository.
 
 \ScreenshotPlaceholder
-{figures/test-unittest-34-pass.png}
-{Kết quả chạy toàn bộ regression tests: 34 tests pass}
-{fig:unittest_34_pass}
-{Ảnh cần thể hiện lệnh \texttt{python -m unittest discover -s tests -p "test\_*.py" -v} và phần cuối output \texttt{Ran 34 tests ... OK}.}
+{figures/test-unittest-35-pass.png}
+{Kết quả chạy toàn bộ regression tests: 35 tests pass}
+{fig:unittest_35_pass}
+{Ảnh cần thể hiện lệnh \texttt{python -m unittest discover -s tests -p "test\_*.py" -v} và phần cuối output \texttt{Ran 35 tests ... OK}.}
 
 Demo luồng bảo mật có giải thích message và tấn công:
 

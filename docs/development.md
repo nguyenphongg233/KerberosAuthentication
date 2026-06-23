@@ -165,7 +165,7 @@ Các case hiện được kiểm:
 - TGT hết hạn nhưng còn trong `renew_till` được renew; quá `renew_till` thì bị từ chối.
 - `client_app.renew_tgt_exchange()` cập nhật TGT trong cache và cho phép TGS Exchange tiếp theo.
 - `kadmin cpw` tăng kvno, giữ key history/audit; `ktadd --all-versions` export đủ key versions.
-- KAdmin Web API add/list/toggle/delete principal và đọc audit log.
+- KAdmin Web API add/list/toggle/delete principal, đọc audit log và tính dashboard statistics.
 - E2E subprocess mở KDC/App Server trên port tạm và chạy client CLI hoàn chỉnh.
 - Negative E2E sai password dừng ở AS Exchange và không chạy tiếp TGS/AP.
 
@@ -322,17 +322,17 @@ Nội dung nên gồm:
 
 ### Principal Management CLI
 
-Nên bổ sung:
+Đã có CLI quản trị cơ bản qua `kdc.kadmin`:
 
 ```text
-python -m kdc.admin create-principal alice
-python -m kdc.admin disable-principal alice@DEMO.LOCAL
-python -m kdc.admin rotate-key fileserver/localhost@DEMO.LOCAL
-python -m kdc.admin export-keytab fileserver/localhost@DEMO.LOCAL
-python -m kdc.admin list-principals
+python -m kdc.kadmin add alice@DEMO.LOCAL -w alice_password -t user
+python -m kdc.kadmin cpw fileserver/localhost@DEMO.LOCAL -w new_service_secret
+python -m kdc.kadmin ktadd fileserver/localhost@DEMO.LOCAL -k app_server/fileserver.keytab --all-versions
+python -m kdc.kadmin delete alice@DEMO.LOCAL
+python -m kdc.kadmin list
 ```
 
-CLI này sẽ giảm nhu cầu sửa `DEFAULT_PRINCIPALS` trong code.
+KAdmin Web cung cấp thêm thao tác add/list/toggle/delete principal qua REST API/dashboard local.
 
 ### Distributed Replay Cache
 
@@ -348,12 +348,13 @@ Backend có thể là SQLite, Redis hoặc database dùng chung.
 
 ### Authorization Layer
 
-Kerberos chỉ xác thực danh tính. Application Server hiện chưa có authorization. Có thể thêm:
+Kerberos chủ yếu xác thực danh tính; project hiện đã có authorization ở mức demo:
+KDC nhúng group vào `authorization_data` của service ticket, và Application Server dùng group để trả protected file catalog khác nhau cho user/admin. Nếu mở rộng tiếp có thể thêm:
 
-- Role.
-- Group.
-- ACL theo service resource.
-- Authorization data trong service ticket.
+- Role chi tiết hơn.
+- ACL theo từng service resource/action.
+- Audit log riêng ở Application Server cho từng protected action.
+- Authorization data có chữ ký/kiểm chứng mạnh hơn như PAC production.
 
 ## Quy Tắc Cập Nhật Tài Liệu
 

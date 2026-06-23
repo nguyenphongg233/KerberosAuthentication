@@ -108,7 +108,7 @@ Khong nen dan toan bo log. Moi co che chi can 5-10 dong dai dien:
 
 Thu tu de trong bao cao:
 
-1. Bang tong hop `unittest`: `Ran 34 tests ... OK`.
+1. Bang tong hop `unittest`: `Ran 35 tests ... OK`.
 2. Trich `demo_security_flows.py` cho wrong password, tampered TGT, replay TGS, replay AP, wrong-service AP.
 3. Trich `demo_tgt_renewal.py` cho TGT renewal.
 4. Trich `test_cross_realm.py` cho cross-realm.

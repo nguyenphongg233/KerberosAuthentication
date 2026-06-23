@@ -24,6 +24,10 @@ from types import SimpleNamespace
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 PYTHON = sys.executable
 
 # ============================================================
@@ -140,6 +144,7 @@ def _issue_tgt(mods: SimpleNamespace, conn, principal: str = "alice@DEMO.LOCAL",
     client_key = derive_key(password, salt=principal_salt(principal, realm), enctype=DEFAULT_ENCTYPE)
     decrypted = decrypt(response["encrypted_data"], client_key, KEY_USAGE_AS_REP_ENCPART)
     enc_part = decode_enc_kdc_rep_part(decrypted, AS_REP)
+    enc_part["client_principal"] = response["client_principal"]
     return {
         "response": response,
         "enc_part": enc_part,

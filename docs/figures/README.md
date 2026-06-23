@@ -5,7 +5,7 @@ already contains placeholders for these files.
 
 ## Run/test summary
 
-- `test-unittest-34-pass.png`: full regression command and final `Ran 34 tests ... OK`.
+- `test-unittest-35-pass.png`: full regression command and final `Ran 35 tests ... OK`.
 
 ## Operation demos
 

@@ -111,6 +111,22 @@ class KAdminWebAPITests(KerberosTestCase):
         self.assertEqual(200, status, principals_after)
         self.assertNotIn(principal, [row["principal_name"] for row in principals_after])
 
+    def test_statistics_use_current_as_tgs_audit_event_names(self) -> None:
+        conn = self.init_database()
+        self.issue_service_ticket(conn)
+        self.mods.as_handler.handle_as_request(
+            self.make_as_req("alice@DEMO.LOCAL", "wrong_password"),
+            conn.cursor(),
+        )
+        conn.commit()
+
+        status, data = self._request("GET", "/api/statistics")
+        self.assertEqual(200, status, data)
+        self.assertEqual(2, data["as_requests"])
+        self.assertEqual(1, data["tgs_requests"])
+        self.assertEqual(1, data["failed_requests"])
+        self.assertAlmostEqual(2 / 3 * 100, data["success_rate"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -445,7 +445,7 @@ Regression tests hiện có 33 case, được tách theo từng cơ chế để 
 | `tests/test_tgt_renewal.py` | TGT hết hạn nhưng còn `renew_till` được renew; quá `renew_till` thì bị từ chối. |
 | `tests/test_client_tgt_renewal.py` | Client gọi `client_app.renew_tgt_exchange()`, cập nhật ccache rồi dùng TGT mới để xin service ticket. |
 | `tests/test_kadmin_cli.py` | `kadmin cpw` tăng kvno, giữ key history/audit; `ktadd --all-versions` export đủ key versions. |
-| `tests/test_kadmin_web_api.py` | KAdmin Web REST API add/list/toggle/delete principal và đọc audit log. |
+| `tests/test_kadmin_web_api.py` | KAdmin Web REST API add/list/toggle/delete principal, đọc audit log và tính dashboard statistics. |
 | `tests/test_env_config.py` | `.env` loader đọc cấu hình local, giữ nguyên biến đã set trong shell và hỗ trợ quote/comment cơ bản. |
 | `tests/test_e2e_subprocess.py` | Mở KDC/App Server trên port tạm, chạy client CLI happy path và negative E2E sai password. |
 
@@ -478,7 +478,7 @@ Các cơ chế bổ sung mới hiện đã có:
 
 - Negative E2E sai password: client dừng ở AS Exchange, không đi tiếp TGS/AP.
 - Client-level TGT renewal: `client_app.renew_tgt_exchange()` renew TGT trong cache rồi dùng được tiếp.
-- KAdmin Web API: add/list/toggle/delete principal và audit log.
+- KAdmin Web API: add/list/toggle/delete principal, audit log và thống kê dashboard `/api/statistics`.
 - Rate limiting/account lockout: nhiều lần pre-auth fail sẽ khóa tạm principal bằng `KDC_ERR_CLIENT_REVOKED`.
 
 ## Kiểm Tra Nhanh
